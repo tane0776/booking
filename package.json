@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@vercel/analytics": "^1.5.0",
     "@vercel/speed-insights": "^1.2.0",
+    "firebase": "^12.1.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
