@@ -8,14 +8,7 @@ const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateStrin
 const fmtCOP = (n) => n?.toLocaleString('es-CO');
 
 // tutores por defecto (fotos en /public/tutores/*.jpg)
-const DEFAULT_TUTORS = [
-  { id: uid(), name: 'Ana',   photo: '/tutores/ana.jpg',   bio: 'Especialista en matemáticas y lectura crítica.' },
-  { id: uid(), name: 'Luis',  photo: '/tutores/luis.jpg',  bio: 'Física y química con enfoque práctico.' },
-  { id: uid(), name: 'Camila',photo: '/tutores/camila.jpg',bio: 'Inglés conversacional y preparación TOEFL.' },
-  { id: uid(), name: 'Diego', photo: '/tutores/diego.jpg', bio: 'Acompañamiento escolar integral (primaria).' },
-  { id: uid(), name: 'Sara',  photo: '/tutores/sara.jpg',  bio: 'Escritura académica y ensayos.' },
-  { id: uid(), name: 'Mateo', photo: '/tutores/mateo.jpg', bio: 'Razonamiento lógico y álgebra.' },
-];
+const DEFAULT_TUTORS = [];
 
 // tarifas y paquetes
 const PRICES = {
@@ -129,11 +122,12 @@ export default function App() {
 
   // cargar / persistir
   useEffect(() => {
-    const t = JSON.parse(localStorage.getItem(LS.TUTORS) || 'null') || DEFAULT_TUTORS;
+    const stored = localStorage.getItem(LS.TUTORS);
+    const t = stored ? JSON.parse(stored) : []; // ← no sembrar defaults
+    setTutors(t);
     const s = JSON.parse(localStorage.getItem(LS.SLOTS) || '[]');
     const b = JSON.parse(localStorage.getItem(LS.BOOKINGS) || '[]');
-    setTutors(t); setSlots(s); setBookings(b);
-    if (!localStorage.getItem(LS.TUTORS)) localStorage.setItem(LS.TUTORS, JSON.stringify(t));
+    setSlots(s); setBookings(b);
 
     const storedTutor = localStorage.getItem(LS.IS_TUTOR) === '1';
     setIsTutor(storedTutor);
@@ -613,6 +607,24 @@ export default function App() {
           <Fade>
           <section className="space-y-6">
             <h2 className="text-xl font-semibold">Administración</h2>
+            <div className="flex justify-end">
+              <button
+                className="px-3 py-2 rounded-lg border bg-white transition duration-300 hover:shadow hover:opacity-95 active:scale-[0.99] text-red-700"
+                onClick={() => {
+                  if (confirm('¿Seguro que quieres borrar todos los datos (tutores, horarios y reservas)?')) {
+                    localStorage.removeItem(LS.TUTORS);
+                    localStorage.removeItem(LS.SLOTS);
+                    localStorage.removeItem(LS.BOOKINGS);
+                    setTutors([]);
+                    setSlots([]);
+                    setBookings([]);
+                    alert('Datos borrados. Ahora puedes crear tutores desde el portal.');
+                  }
+                }}
+              >
+                Resetear datos (borrar todo)
+              </button>
+            </div>
             <div className="border rounded-2xl bg-white shadow-sm overflow-hidden">
               <table className="w-full text-left">
                 <thead className="text-sm text-gray-600 border-b bg-gray-50">
