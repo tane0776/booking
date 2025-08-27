@@ -99,6 +99,12 @@ export default function App() {
   const [newTutorPhoto, setNewTutorPhoto] = useState('');
   const [newTutorBio, setNewTutorBio] = useState('');
 
+  // Admin: editar tutor
+  const [editTutorId, setEditTutorId] = useState('');
+  const [editTutorName, setEditTutorName] = useState('');
+  const [editTutorPhoto, setEditTutorPhoto] = useState('');
+  const [editTutorBio, setEditTutorBio] = useState('');
+
   // Reservar – filtros rápidos
   const [filterTutorId, setFilterTutorId] = useState('');
   const [filterDate, setFilterDate] = useState('');
@@ -136,6 +142,22 @@ export default function App() {
   useEffect(() => { localStorage.setItem(LS.SLOTS, JSON.stringify(slots)); }, [slots]);
   useEffect(() => { localStorage.setItem(LS.BOOKINGS, JSON.stringify(bookings)); }, [bookings]);
   useEffect(() => { localStorage.setItem(LS.IS_TUTOR, isTutor ? '1' : '0'); }, [isTutor]);
+
+  // Precargar el formulario de edición cuando cambia el tutor seleccionado
+  useEffect(() => {
+    if (!editTutorId) {
+      setEditTutorName('');
+      setEditTutorPhoto('');
+      setEditTutorBio('');
+      return;
+    }
+    const t = tutors.find(t => t.id === editTutorId);
+    if (t) {
+      setEditTutorName(t.name || '');
+      setEditTutorPhoto(t.photo || '');
+      setEditTutorBio(t.bio || '');
+    }
+  }, [editTutorId, tutors]);
 
   const tutorMap = useMemo(() => Object.fromEntries(tutors.map(t => [t.id, t])), [tutors]);
 
@@ -389,10 +411,10 @@ export default function App() {
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
                 {tutors.map(t => (
                   <article key={t.id} className="border rounded-2xl bg-white p-5 shadow-sm transition hover:shadow-lg hover:scale-[1.01] duration-300">
-                    <img src={t.photo || '/tutores/default.jpg'} alt={t.name} className="w-full h-40 object-cover rounded-xl" />
-                    <div className="mt-3">
-                      <h3 className="font-semibold">{t.name}</h3>
-                      <p className="text-sm text-gray-600">{t.bio || 'Tutor/a de Lumina.'}</p>
+                    <img src={t.photo || '/tutores/default.jpg'} alt={t.name} className="w-full h-64 object-cover rounded-xl" />
+                    <div className="mt-4 text-center">
+                      <h3 className="text-xl font-semibold">{t.name}</h3>
+                      <p className="text-base text-gray-700">{t.bio || 'Tutor/a de Lumina.'}</p>
                     </div>
                   </article>
                 ))}
@@ -624,6 +646,57 @@ export default function App() {
               >
                 Resetear datos (borrar todo)
               </button>
+            </div>
+            <div className="rounded-2xl border bg-white p-4 space-y-3">
+              <h3 className="font-medium">Editar tutor</h3>
+              <div className="grid sm:grid-cols-4 gap-2">
+                <select
+                  className="border rounded-lg px-3 py-2 bg-white"
+                  value={editTutorId}
+                  onChange={e => setEditTutorId(e.target.value)}
+                >
+                  <option value="">Seleccionar tutor</option>
+                  {tutors.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <input
+                  className="border rounded-lg px-3 py-2"
+                  placeholder="Nombre"
+                  value={editTutorName}
+                  onChange={e => setEditTutorName(e.target.value)}
+                  disabled={!editTutorId}
+                />
+                <input
+                  className="border rounded-lg px-3 py-2"
+                  placeholder="Foto (ruta, ej: /tutores/ana.jpg)"
+                  value={editTutorPhoto}
+                  onChange={e => setEditTutorPhoto(e.target.value)}
+                  disabled={!editTutorId}
+                />
+                <input
+                  className="border rounded-lg px-3 py-2"
+                  placeholder="Descripción"
+                  value={editTutorBio}
+                  onChange={e => setEditTutorBio(e.target.value)}
+                  disabled={!editTutorId}
+                />
+              </div>
+              <div className="flex justify-end">
+                <button
+                  className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]"
+                  onClick={() => {
+                    if (!editTutorId) return alert('Selecciona un tutor.');
+                    const name = editTutorName.trim();
+                    if (!name) return alert('El nombre no puede estar vacío.');
+                    const photo = editTutorPhoto.trim() || '/tutores/default.jpg';
+                    const bio = editTutorBio.trim() || 'Tutor/a de Lumina.';
+                    setTutors(prev => prev.map(t => t.id === editTutorId ? { ...t, name, photo, bio } : t));
+                    alert('Información del tutor actualizada.');
+                  }}
+                  disabled={!editTutorId}
+                >
+                  Guardar cambios
+                </button>
+              </div>
             </div>
             <div className="border rounded-2xl bg-white shadow-sm overflow-hidden">
               <table className="w-full text-left">
