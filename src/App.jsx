@@ -1,4 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { initializeApp } from 'firebase/app';
+import {
+  getFirestore, collection, addDoc, updateDoc, deleteDoc, doc,
+  onSnapshot, getDocs, writeBatch
+} from 'firebase/firestore';
+
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 
 // ---------- utilidades ----------
 const uid = () => (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
@@ -15,6 +22,10 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FB_APP_ID,
   measurementId: import.meta.env.VITE_FB_MEASUREMENT_ID,
 };
+const appFB = initializeApp(firebaseConfig);
+const db = getFirestore(appFB);
+
+const auth = getAuth(appFB);
 
 // tutores por defecto (fotos en /public/tutores/*.jpg)
 const DEFAULT_TUTORS = [];
@@ -37,9 +48,6 @@ const LS = {
   BOOKINGS: 'lb_bookings_v2',
   IS_TUTOR: 'lb_is_tutor',
 };
-
-// código tutor desde .env.local o Secret en Actions
-const TUTOR_CODE = import.meta.env.VITE_TUTOR_CODE ?? '';
 
 // modalidades y opciones
 const MODALIDADES = [
@@ -93,9 +101,11 @@ export default function App() {
   const [tab, setTab] = useState('home');
 
   // tutor login
-  const [isTutor, setIsTutor] = useState(false);
-  const [showLogin, setShowLogin] = useState(false);
-  const [loginCode, setLoginCode] = useState('');
+// tutor auth (Firebase)
+const [isTutor, setIsTutor] = useState(false);
+const [showLogin, setShowLogin] = useState(false);
+const [loginEmail, setLoginEmail] = useState('');
+const [loginPassword, setLoginPassword] = useState('');
 
   // datos
   const [tutors, setTutors] = useState([]);
@@ -137,19 +147,34 @@ export default function App() {
 
   // cargar / persistir
   useEffect(() => {
-    const stored = localStorage.getItem(LS.TUTORS);
-    const t = stored ? JSON.parse(stored) : []; // ← no sembrar defaults
-    setTutors(t);
-    const s = JSON.parse(localStorage.getItem(LS.SLOTS) || '[]');
-    const b = JSON.parse(localStorage.getItem(LS.BOOKINGS) || '[]');
-    setSlots(s); setBookings(b);
+    const unsubTutors = onSnapshot(collection(db, 'tutors'), (snap) => {
+      setTutors(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    const unsubSlots = onSnapshot(collection(db, 'slots'), (snap) => {
+      setSlots(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    const unsubBookings = onSnapshot(collection(db, 'bookings'), (snap) => {
+      setBookings(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+
+    useEffect(() => {
+  const unsub = onAuthStateChanged(auth, (user) => {
+    setIsTutor(!!user);
+    // opcional: persistir banderita para la UI
+    localStorage.setItem(LS.IS_TUTOR, user ? '1' : '0');
+  });
+  return () => unsub();
+}, []);
 
     const storedTutor = localStorage.getItem(LS.IS_TUTOR) === '1';
     setIsTutor(storedTutor);
+
+    return () => {
+      unsubTutors();
+      unsubSlots();
+      unsubBookings();
+    };
   }, []);
-  useEffect(() => { localStorage.setItem(LS.TUTORS, JSON.stringify(tutors)); }, [tutors]);
-  useEffect(() => { localStorage.setItem(LS.SLOTS, JSON.stringify(slots)); }, [slots]);
-  useEffect(() => { localStorage.setItem(LS.BOOKINGS, JSON.stringify(bookings)); }, [bookings]);
   useEffect(() => { localStorage.setItem(LS.IS_TUTOR, isTutor ? '1' : '0'); }, [isTutor]);
 
   // Precargar el formulario de edición cuando cambia el tutor seleccionado
@@ -170,19 +195,27 @@ export default function App() {
 
   const tutorMap = useMemo(() => Object.fromEntries(tutors.map(t => [t.id, t])), [tutors]);
 
-  // Tutor login
-  const login = () => {
-    if (!TUTOR_CODE) return alert('No hay código configurado. Añade VITE_TUTOR_CODE en .env.local o como Secret en GitHub.');
-    if (loginCode.trim() === TUTOR_CODE) {
-      setIsTutor(true);
-      setShowLogin(false);
-      setLoginCode('');
-      setTab('tutor');
-    } else {
-      alert('Código incorrecto.');
-    }
-  };
-  const logout = () => { setIsTutor(false); setTab('home'); };
+  // Tutor login (Firebase Auth)
+const login = async () => {
+  try {
+    await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
+    setShowLogin(false);
+    setLoginEmail('');
+    setLoginPassword('');
+    setTab('tutor');
+  } catch (e) {
+    alert('No se pudo iniciar sesión: ' + (e?.message || e));
+  }
+};
+
+const logout = async () => {
+  try {
+    await signOut(auth);
+    setTab('home');
+  } catch (e) {
+    alert('Error al cerrar sesión: ' + (e?.message || e));
+  }
+};
 
   // Tutor portal actions
   const addTutor = () => {
@@ -190,20 +223,26 @@ export default function App() {
     if (!name) return;
     const photo = newTutorPhoto.trim() || '/tutores/default.jpg';
     const bio = newTutorBio.trim() || 'Tutor/a de Lumina.';
-    setTutors(prev => [...prev, { id: uid(), name, photo, bio }]);
-    setNewTutorName(''); setNewTutorPhoto(''); setNewTutorBio('');
+    addDoc(collection(db, 'tutors'), { name, photo, bio })
+      .then(() => {
+        setNewTutorName(''); setNewTutorPhoto(''); setNewTutorBio('');
+      })
+      .catch((e) => alert('Error al agregar tutor: ' + e.message));
   };
 
   const addSlot = () => {
     const { tutorId, date, start, end, modalidad } = newSlot;
     if (!tutorId || !date || !start || !end || !modalidad) return alert('Completa todos los campos.');
     if (end <= start) return alert('La hora de fin debe ser posterior a la de inicio.');
-    const slot = { id: uid(), tutorId, dateISO: toISODate(date), start: formatTime(start), end: formatTime(end), booked: false, modalidad };
-    setSlots(prev => [...prev, slot]);
-    setNewSlot({ tutorId: '', date: '', start: '', end: '', modalidad: 'presencial' });
+    const slot = { tutorId, dateISO: toISODate(date), start: formatTime(start), end: formatTime(end), booked: false, modalidad };
+    addDoc(collection(db, 'slots'), slot)
+      .then(() => setNewSlot({ tutorId: '', date: '', start: '', end: '', modalidad: 'presencial' }))
+      .catch((e) => alert('Error al agregar disponibilidad: ' + e.message));
   };
 
-  const removeSlot = (id) => setSlots(prev => prev.filter(s => s.id !== id));
+  const removeSlot = (id) => {
+    deleteDoc(doc(db, 'slots', id)).catch((e) => alert('Error al eliminar: ' + e.message));
+  };
 
   // listas filtradas
   const availableSlots = useMemo(() => {
@@ -255,34 +294,48 @@ export default function App() {
     const { parentName, email, student, notes } = bookingForm;
     if (!parentName.trim() || !email.trim() || !student.trim()) return alert('Por favor completa nombre del padre/madre, correo y nombre del estudiante.');
 
-    setSlots(prev => prev.map(s => selectedSlots.includes(s.id) ? { ...s, booked: true } : s));
-    setBookings(prev => [...prev, {
-      id: uid(),
-      slotIds: selectedSlots.slice(),
-      tutorId: selectedTutorForPkg,
-      modalidad: selectedModalidadForPkg,
-      hours: bookingMode === 'individual' ? 1 : selectedPackage,
-      mode: bookingMode,
-      parentName: parentName.trim(),
-      email: email.trim(),
-      student: student.trim(),
-      notes: (notes || '').trim(),
-      createdAtISO: new Date().toISOString(),
-    }]);
-
-    setSelectedSlots([]);
-    setSingleSelectedSlot(null);
-    setBookingForm({ parentName: '', email: '', student: '', notes: '' });
-    setShowConfirm(false);
-    alert('¡Reserva confirmada!');
+    try {
+      const batch = writeBatch(db);
+      // marcar slots como reservados
+      selectedSlots.forEach(id => {
+        batch.update(doc(db, 'slots', id), { booked: true });
+      });
+      // crear reserva
+      const bookingRef = doc(collection(db, 'bookings'));
+      batch.set(bookingRef, {
+        slotIds: selectedSlots.slice(),
+        tutorId: selectedTutorForPkg,
+        modalidad: selectedModalidadForPkg,
+        hours: bookingMode === 'individual' ? 1 : selectedPackage,
+        mode: bookingMode,
+        parentName: parentName.trim(),
+        email: email.trim(),
+        student: student.trim(),
+        notes: (notes || '').trim(),
+        createdAtISO: new Date().toISOString(),
+      });
+      batch.commit().then(() => {
+        setSelectedSlots([]);
+        setSingleSelectedSlot(null);
+        setBookingForm({ parentName: '', email: '', student: '', notes: '' });
+        setShowConfirm(false);
+        alert('¡Reserva confirmada!');
+      }).catch((e) => alert('Error al confirmar: ' + e.message));
+    } catch (e) {
+      alert('Error al confirmar: ' + e.message);
+    }
   };
 
   // cancelar desde admin
   const cancelBooking = (bookingId) => {
     const booking = bookings.find(b => b.id === bookingId);
     if (!booking) return;
-    setSlots(prev => prev.map(s => booking.slotIds.includes(s.id) ? { ...s, booked: false } : s));
-    setBookings(prev => prev.filter(b => b.id !== bookingId));
+    const batch = writeBatch(db);
+    booking.slotIds.forEach(id => {
+      batch.update(doc(db, 'slots', id), { booked: false });
+    });
+    batch.delete(doc(db, 'bookings', bookingId));
+    batch.commit().catch((e) => alert('Error al cancelar: ' + e.message));
   };
 
   // total a mostrar en el modal
@@ -643,13 +696,20 @@ export default function App() {
                 className="px-3 py-2 rounded-lg border bg-white transition duration-300 hover:shadow hover:opacity-95 active:scale-[0.99] text-red-700"
                 onClick={() => {
                   if (confirm('¿Seguro que quieres borrar todos los datos (tutores, horarios y reservas)?')) {
-                    localStorage.removeItem(LS.TUTORS);
-                    localStorage.removeItem(LS.SLOTS);
-                    localStorage.removeItem(LS.BOOKINGS);
-                    setTutors([]);
-                    setSlots([]);
-                    setBookings([]);
-                    alert('Datos borrados. Ahora puedes crear tutores desde el portal.');
+                    (async () => {
+                      try {
+                        const batch = writeBatch(db);
+                        const colls = ['bookings', 'slots', 'tutors'];
+                        for (const cName of colls) {
+                          const snap = await getDocs(collection(db, cName));
+                          snap.forEach(d => batch.delete(doc(db, cName, d.id)));
+                        }
+                        await batch.commit();
+                        alert('Datos borrados en la nube. Ahora puedes crear tutores desde el portal.');
+                      } catch (e) {
+                        alert('Error al borrar datos: ' + e.message);
+                      }
+                    })();
                   }
                 }}
               >
@@ -698,8 +758,9 @@ export default function App() {
                     if (!name) return alert('El nombre no puede estar vacío.');
                     const photo = editTutorPhoto.trim() || '/tutores/default.jpg';
                     const bio = editTutorBio.trim() || 'Tutor/a de Lumina.';
-                    setTutors(prev => prev.map(t => t.id === editTutorId ? { ...t, name, photo, bio } : t));
-                    alert('Información del tutor actualizada.');
+                    updateDoc(doc(db, 'tutors', editTutorId), { name, photo, bio })
+                      .then(() => alert('Información del tutor actualizada.'))
+                      .catch((e) => alert('Error al actualizar tutor: ' + e.message));
                   }}
                   disabled={!editTutorId}
                 >
@@ -799,25 +860,41 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL: Login de tutor */}
       {showLogin && !isTutor && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30 transition-opacity duration-300">
-          <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl space-y-4 transition-transform duration-300 will-change-transform">
-            <h3 className="text-lg font-semibold">Ingreso de tutor</h3>
-            <input
-              type="password"
-              placeholder="Introduce el código de tutor"
-              className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-              value={loginCode}
-              onChange={e => setLoginCode(e.target.value)}
-            />
-            <div className="flex justify-end gap-2">
-              <button className="px-3 py-2 rounded-lg border bg-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={() => { setShowLogin(false); setLoginCode(''); }}>Cancelar</button>
-              <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={login}>Entrar</button>
-            </div>
-          </div>
-        </div>
-      )}
+  <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30 transition-opacity duration-300">
+    <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl space-y-4 transition-transform duration-300 will-change-transform">
+      <h3 className="text-lg font-semibold">Ingreso de tutor</h3>
+      <input
+        type="email"
+        placeholder="Correo del tutor"
+        className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        value={loginEmail}
+        onChange={e => setLoginEmail(e.target.value)}
+      />
+      <input
+        type="password"
+        placeholder="Contraseña"
+        className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        value={loginPassword}
+        onChange={e => setLoginPassword(e.target.value)}
+      />
+      <div className="flex justify-end gap-2">
+        <button
+          className="px-3 py-2 rounded-lg border bg-white transition duration-300 hover:opacity-95 active:scale-[0.99]"
+          onClick={() => { setShowLogin(false); setLoginEmail(''); setLoginPassword(''); }}
+        >
+          Cancelar
+        </button>
+        <button
+          className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]"
+          onClick={login}
+        >
+          Entrar
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
       <footer className="py-10 text-center text-xs text-gray-500">
         Hecho con ❤️ Lumina
