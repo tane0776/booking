@@ -157,15 +157,6 @@ const [loginPassword, setLoginPassword] = useState('');
       setBookings(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    useEffect(() => {
-  const unsub = onAuthStateChanged(auth, (user) => {
-    setIsTutor(!!user);
-    // opcional: persistir banderita para la UI
-    localStorage.setItem(LS.IS_TUTOR, user ? '1' : '0');
-  });
-  return () => unsub();
-}, []);
-
     const storedTutor = localStorage.getItem(LS.IS_TUTOR) === '1';
     setIsTutor(storedTutor);
 
@@ -174,6 +165,14 @@ const [loginPassword, setLoginPassword] = useState('');
       unsubSlots();
       unsubBookings();
     };
+  }, []);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setIsTutor(!!user);
+      localStorage.setItem(LS.IS_TUTOR, user ? '1' : '0');
+    });
+    return () => unsub();
   }, []);
   useEffect(() => { localStorage.setItem(LS.IS_TUTOR, isTutor ? '1' : '0'); }, [isTutor]);
 
