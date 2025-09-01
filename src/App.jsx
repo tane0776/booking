@@ -141,6 +141,43 @@ const PRICES = {
   paquetesVirtuales:    { 4: 190000, 8: 385000, 10: 460000 },
 };
 
+// --- Tarifas especiales fin de semana / festivos (Colombia) ---
+const WEEKEND_RATES = {
+  presencial: 80000,
+  virtual: 65000,
+};
+const NORMAL_RATES = {
+  presencial: PRICES.horaPresencial,
+  virtual: PRICES.horaVirtual,
+};
+// Festivos (observados en Colombia) — agrega/ajusta según calendario oficial
+const CO_HOLIDAYS_YYYYMMDD = new Set([
+  '2025-01-01','2025-01-06','2025-03-24','2025-04-17','2025-04-18','2025-05-01',
+  '2025-05-19','2025-06-09','2025-06-23','2025-07-07','2025-07-20','2025-08-07',
+  '2025-08-18','2025-10-13','2025-11-03','2025-11-17','2025-12-08','2025-12-25'
+]);
+const yyyymmdd = (iso) => {
+  const d = new Date(iso);
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+};
+const isWeekendOrHoliday = (iso) => {
+  const d = new Date(iso);
+  const wk = d.getDay(); // 0=Domingo,6=Sábado
+  if (wk === 0 || wk === 6) return true;
+  return CO_HOLIDAYS_YYYYMMDD.has(yyyymmdd(iso));
+};
+const getRateForSlot = (modalidad, isoDate) => {
+  return isWeekendOrHoliday(isoDate) ? WEEKEND_RATES[modalidad] : NORMAL_RATES[modalidad];
+};
+// Calcula total dinámico a partir de slots seleccionados (1h por slot)
+const computeTotalFromSlots = (slotObjs, modalidad) => {
+  if (!slotObjs || slotObjs.length === 0) return 0;
+  return slotObjs.reduce((sum, s) => sum + getRateForSlot(modalidad, s.dateISO), 0);
+};
+
 // storage keys (v2 por cambios de estructura)
 const LS = {
   TUTORS: 'lb_tutors_v2',
@@ -245,7 +282,7 @@ const [loginPassword, setLoginPassword] = useState('');
 
   // Confirmación (modal) + datos del padre
   const [showConfirm, setShowConfirm] = useState(false);
-  const [bookingForm, setBookingForm] = useState({ parentName: '', email: '', student: '', notes: '' });
+  const [bookingForm, setBookingForm] = useState({ parentName: '', email: '', student: '', notes: '', paymentRef: '' });
 
   // cargar / persistir
   useEffect(() => {
@@ -437,7 +474,7 @@ const logout = async () => {
 
   // confirmar reserva
   const confirmBooking = () => {
-    const { parentName, email, student, notes } = bookingForm;
+    const { parentName, email, student, notes, paymentRef } = bookingForm;
     if (!parentName.trim() || !email.trim() || !student.trim()) return alert('Por favor completa nombre del padre/madre, correo y nombre del estudiante.');
 
     try {
@@ -471,6 +508,8 @@ const logout = async () => {
         email: email.trim(),
         student: student.trim(),
         notes: (notes || '').trim(),
+        paymentStatus: 'pendiente',
+        paymentRef: (paymentRef || '').trim(),
         createdAtISO: new Date().toISOString(),
       });
 
@@ -482,11 +521,7 @@ const logout = async () => {
           const whenText = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(', ');
           const tipo = bookingMode === 'individual' ? 'Clase individual' : `Paquete ${selectedPackage} horas`;
           const hours = bookingMode === 'individual' ? 1 : selectedPackage;
-          const { amount } = computeTotal({
-            mode: bookingMode,
-            modalidad: selectedModalidadForPkg || singleSelectedSlot?.modalidad,
-            hours
-          });
+          const amount = computeTotalFromSlots(slotList, selectedModalidadForPkg || singleSelectedSlot?.modalidad);
           const total = amount ? `$${fmtCOP(amount)} COP` : '—';
 
           await sendReservationEmails({
@@ -513,7 +548,7 @@ const logout = async () => {
 
         setSelectedSlots([]);
         setSingleSelectedSlot(null);
-        setBookingForm({ parentName: '', email: '', student: '', notes: '' });
+        setBookingForm({ parentName: '', email: '', student: '', notes: '', paymentRef: '' });
         setShowConfirm(false);
         alert('¡Reserva confirmada!');
       }).catch((e) => alert('Error al confirmar: ' + e.message));
@@ -543,9 +578,10 @@ const logout = async () => {
 
   // total a mostrar en el modal
   const totalInfo = (() => {
-    const hours = bookingMode === 'individual' ? 1 : selectedPackage;
     const modalidad = selectedModalidadForPkg || singleSelectedSlot?.modalidad || 'presencial';
-    return computeTotal({ mode: bookingMode, modalidad, hours });
+    const chosenSlots = selectedSlots.map(id => slots.find(s => s.id === id)).filter(Boolean);
+    const amount = computeTotalFromSlots(chosenSlots, modalidad);
+    return { amount, note: null };
   })();
 
   // ---------- UI ----------
@@ -631,6 +667,7 @@ const logout = async () => {
                     <li><b>Paquete 4 horas:</b>${fmtCOP(PRICES.paquetesPresenciales[4])} COP</li>
                     <li><b>Paquete 8 horas: </b>${fmtCOP(PRICES.paquetesPresenciales[8])} COP</li>
                     <li><b>Paquete 10 horas: </b>${fmtCOP(PRICES.paquetesPresenciales[10])} COP</li>
+                    <li className="text-xs text-gray-500 mt-2">Sábados, domingos y festivos: ${fmtCOP(WEEKEND_RATES.presencial)} COP por hora.</li>
                   </ul>
                 </div>
 
@@ -644,8 +681,21 @@ const logout = async () => {
                     <li><b>Paquete 4 horas: </b>${fmtCOP(PRICES.paquetesVirtuales[4])} COP</li>
                     <li><b>Paquete 8 horas: </b>${fmtCOP(PRICES.paquetesVirtuales[8])} COP</li>
                     <li><b>Paquete 10 horas: </b>${fmtCOP(PRICES.paquetesVirtuales[10])} COP</li>
+                    <li className="text-xs text-gray-500 mt-2">Sábados, domingos y festivos: ${fmtCOP(WEEKEND_RATES.virtual)} COP por hora.</li>
                   </ul>
                 </div>
+              </div>
+
+              <div className="rounded-2xl border bg-white p-6">
+                <h3 className="text-lg font-semibold">Tarifas fin de semana y festivos</h3>
+                <p className="text-sm text-gray-700 mt-1">
+                  Las clases programadas en <b>sábado, domingo o festivos (Colombia)</b> tienen tarifa especial:
+                </p>
+                <ul className="mt-3 space-y-1 text-sm text-gray-800">
+                  <li><b>Presencial:</b> ${fmtCOP(WEEKEND_RATES.presencial)} COP por hora</li>
+                  <li><b>Virtual:</b> ${fmtCOP(WEEKEND_RATES.virtual)} COP por hora</li>
+                </ul>
+                <p className="text-xs text-gray-500 mt-2">La tarifa se calcula automáticamente según la fecha de cada clase.</p>
               </div>
 
               {/* Botones inferiores */}
@@ -1067,6 +1117,22 @@ const logout = async () => {
               <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" type="email" placeholder="Correo electrónico" value={bookingForm.email} onChange={e => setBookingForm(f => ({ ...f, email: e.target.value }))} />
               <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" placeholder="Nombre del estudiante" value={bookingForm.student} onChange={e => setBookingForm(f => ({ ...f, student: e.target.value }))} />
               <textarea className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" rows={3} placeholder="Notas (opcional)" value={bookingForm.notes} onChange={e => setBookingForm(f => ({ ...f, notes: e.target.value }))} />
+              <div className="mt-2 rounded-lg border p-3 bg-white">
+                <div className="font-medium mb-2">Pago</div>
+                <p className="text-sm text-gray-600">Escanea el QR de Bancolombia para pagar. Luego ingresa el número de referencia o adjunta la nota en "Notas". Verificaremos manualmente.</p>
+                <div className="mt-3 flex items-center gap-3">
+                  <img src="/qr-bancolombia.png" alt="QR Bancolombia" className="w-40 h-40 object-contain border rounded-md bg-white" />
+                  <div className="flex-1">
+                    <input
+                      className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      placeholder="Referencia de pago (opcional)"
+                      value={bookingForm.paymentRef}
+                      onChange={e => setBookingForm(f => ({ ...f, paymentRef: e.target.value }))}
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Puedes enviarnos el comprobante por correo respondiendo a la confirmación.</p>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="flex justify-end gap-2">
