@@ -412,7 +412,7 @@ const logout = async () => {
       for (let t = startM; t + WINDOW <= endM; t += STEP) {
         const sHM = toHM(t);
         const eHM = toHM(t + WINDOW);
-        const slot = { tutorId: _tutorId, dateISO, start: sHM, end: eHM, booked: false, modalidad: _mod };
+        const slot = { tutorId: _tutorId, dateISO, start: sHM, end: eHM, booked: false, blockedBy: null, modalidad: _mod };
         ops.push(addDoc(collection(db, 'slots'), slot));
       }
       await Promise.all(ops);
