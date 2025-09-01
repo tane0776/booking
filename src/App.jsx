@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { initializeApp } from 'firebase/app';
 import {
   getFirestore, collection, addDoc, updateDoc, deleteDoc, doc,
-  onSnapshot, getDocs, writeBatch
+  onSnapshot, getDocs, getDoc, writeBatch
 } from 'firebase/firestore';
 
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -275,7 +275,6 @@ const [loginPassword, setLoginPassword] = useState('');
   const [selectedSlots, setSelectedSlots] = useState([]);
 
   // Confirmación (modal) + datos del padre
-  // Confirmación (modal) + datos del padre
   const [showConfirm, setShowConfirm] = useState(false);
   // 1 = datos; 2 = pago/confirmación; 3 = éxito
   const [confirmStep, setConfirmStep] = useState(1);
@@ -290,6 +289,8 @@ const [loginPassword, setLoginPassword] = useState('');
   });
   // Archivo de comprobante (opcional)
   const [paymentFile, setPaymentFile] = useState(null);
+  // Estado de envío para evitar doble confirmación
+  const [submitting, setSubmitting] = useState(false);
   // cargar / persistir
   useEffect(() => {
     const unsubTutors = onSnapshot(collection(db, 'tutors'), (snap) => {
@@ -488,9 +489,58 @@ const logout = async () => {
   };
 
   // confirmar reserva
-  const confirmBooking = () => {
+  const confirmBooking = async () => {
     const { parentName, email, student, notes, paymentRef } = bookingForm;
     if (!parentName.trim() || !email.trim() || !student.trim()) return alert('Por favor completa nombre del padre/madre, correo y nombre del estudiante.');
+    // Validación simple de email
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
+      alert('El correo parece inválido. Verifícalo por favor.');
+      return;
+    }
+    // Evitar doble envío
+    if (submitting) return;
+    setSubmitting(true);
+    // Validaciones de selección de slots / tutor / modalidad
+    if (!selectedSlots || selectedSlots.length === 0) {
+      alert('Debes seleccionar al menos un horario.');
+      setSubmitting(false);
+      return;
+    }
+    const tutorIdForBooking = selectedTutorForPkg || singleSelectedSlot?.tutorId || '';
+    const modalidadForBooking = selectedModalidadForPkg || singleSelectedSlot?.modalidad || '';
+    if (!tutorIdForBooking || !modalidadForBooking) {
+      alert('Falta tutor o modalidad. Vuelve a seleccionar el horario.');
+      setSubmitting(false);
+      return;
+    }
+
+    // Verificar en servidor que los slots siguen libres y dentro de ventana permitida
+    try {
+      for (const id of selectedSlots) {
+        const snap = await getDoc(doc(db, 'slots', id));
+        if (!snap.exists()) {
+          alert('Un horario seleccionado ya no existe.');
+          setSubmitting(false);
+          return;
+        }
+        const s = snap.data();
+        if (s.booked || s.blockedBy) {
+          alert('Un horario seleccionado acaba de ser reservado por otra persona. Actualiza la página y vuelve a intentar.');
+          setSubmitting(false);
+          return;
+        }
+        // Revalidar margen de anticipación (lead time)
+        if (!isSlotFutureWithLead(s)) {
+          alert('Un horario seleccionado quedó demasiado cerca de la hora actual y ya no se puede reservar.');
+          setSubmitting(false);
+          return;
+        }
+      }
+    } catch (e) {
+      alert('No se pudieron verificar los horarios seleccionados. Intenta de nuevo.');
+      setSubmitting(false);
+      return;
+    }
 
     try {
       const batch = writeBatch(db);
@@ -500,11 +550,13 @@ const logout = async () => {
         // Subir comprobante si se adjunta archivo (Storage)
         let paymentProofUrl = '';
         if (paymentFile) {
-          const safeName = (paymentFile.name || 'comprobante').replace(/[^\w.\-]/g, '_');
-          const path = `paymentProofs/${bookingRef.id}/${safeName}`;
-          const fileRef = sRef(storage, path);
-          await uploadBytes(fileRef, paymentFile);
-          paymentProofUrl = await getDownloadURL(fileRef);
+          paymentProofUrl = await (async () => {
+            const safeName = (paymentFile.name || 'comprobante').replace(/[^\w.\-]/g, '_');
+            const path = `paymentProofs/${bookingRef.id}/${safeName}`;
+            const fileRef = sRef(storage, path);
+            await uploadBytes(fileRef, paymentFile);
+            return await getDownloadURL(fileRef);
+          })();
         }
 
       // marcar seleccionados como reservados
@@ -525,8 +577,8 @@ const logout = async () => {
       // crear reserva
       batch.set(bookingRef, {
         slotIds: selectedSlots.slice(),
-        tutorId: selectedTutorForPkg,
-        modalidad: selectedModalidadForPkg,
+        tutorId: tutorIdForBooking,
+        modalidad: modalidadForBooking,
         hours: bookingMode === 'individual' ? 1 : selectedPackage,
         mode: bookingMode,
         parentName: parentName.trim(),
@@ -540,48 +592,56 @@ const logout = async () => {
         topics: (bookingForm.topics || '').trim(),  
         createdAtISO: new Date().toISOString(),
       });
-
-      batch.commit().then(async () => {
-        // enviar correos por EmailJS (sin abrir cliente)
-        try {
-          const t = tutorMap[selectedTutorForPkg || singleSelectedSlot?.tutorId];
-          const slotList = selectedSlots.map(id => slots.find(s => s.id === id)).filter(Boolean);
-          const whenText = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(', ');
-          const tipo = bookingMode === 'individual' ? 'Clase individual' : `Paquete ${selectedPackage} horas`;
-          const hours = bookingMode === 'individual' ? 1 : selectedPackage;
-          const amount = computeTotalFromSlots(slotList, selectedModalidadForPkg || singleSelectedSlot?.modalidad);
-          const total = amount ? `$${fmtCOP(amount)} COP` : '—';
-
-          await sendReservationEmails({
-            parentEmail: email.trim(),
-            tutorEmail: t?.email || '',
-            tutorName: t?.name || 'Tutor',
-            tutorPhoto: t?.photo || '',
-            parentName: parentName.trim(),
-            student: student.trim(),
-            modalidad: selectedModalidadForPkg || singleSelectedSlot?.modalidad,
-            tipo,
-            hours,
-            whenText,
-            total,
-            bookingId: bookingRef.id,
-            notes: (notes || '').trim(),
-            manageUrl: '#',
-            manageUrlTutor: '#',
-            logoUrl: '/logo-home.png'
-          });
-        } catch (e) {
-          console.warn('Error al enviar emails via EmailJS:', e);
-        }
-
-        setSelectedSlots([]);
-        setSingleSelectedSlot(null);
-        setBookingForm({ parentName: '', email: '', student: '', subjects: '', topics: '', notes: '', paymentRef: '' });
-        setPaymentFile(null);
-        setConfirmStep(3); // mostrar pantalla de éxito en el modal
-      }).catch((e) => alert('Error al confirmar: ' + e.message));
+      try {
+        await batch.commit();
+      } catch (e) {
+        alert('Error al confirmar: ' + e.message);
+        setSubmitting(false);
+        return;
+      }
+      
+      // enviar correos por EmailJS (sin abrir cliente)
+      try {
+        const t = tutorMap[tutorIdForBooking];
+        const slotList = selectedSlots.map(id => slots.find(s => s.id === id)).filter(Boolean);
+        const whenText = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(', ');
+        const tipo = bookingMode === 'individual' ? 'Clase individual' : `Paquete ${selectedPackage} horas`;
+        const hours = bookingMode === 'individual' ? 1 : selectedPackage;
+        const amount = computeTotalFromSlots(slotList, modalidadForBooking);
+        const total = amount ? `$${fmtCOP(amount)} COP` : '—';
+      
+        await sendReservationEmails({
+          parentEmail: email.trim(),
+          tutorEmail: t?.email || '',
+          tutorName: t?.name || 'Tutor',
+          tutorPhoto: t?.photo || '',
+          parentName: parentName.trim(),
+          student: student.trim(),
+          modalidad: modalidadForBooking,
+          tipo,
+          hours,
+          whenText,
+          total,
+          bookingId: bookingRef.id,
+          notes: (notes || '').trim(),
+          manageUrl: '#',
+          manageUrlTutor: '#',
+          logoUrl: '/logo-home.png'
+        });
+      } catch (e) {
+        console.warn('Error al enviar emails via EmailJS:', e);
+      }
+      
+      setSelectedSlots([]);
+      setSingleSelectedSlot(null);
+      setBookingForm({ parentName: '', email: '', student: '', subjects: '', topics: '', notes: '', paymentRef: '' });
+      setPaymentFile(null);
+      setConfirmStep(3); // mostrar pantalla de éxito en el modal
+      setSubmitting(false);
     } catch (e) {
       alert('Error al confirmar: ' + e.message);
+      setSubmitting(false);
+      return;
     }
   };
 
@@ -1084,13 +1144,13 @@ const logout = async () => {
                     <tr><td colSpan="10" className="px-4 py-3 text-gray-600">Aún no hay reservas.</td></tr>
                   )}
                   {bookings.map(b => {
-                    const t = tutorMap[b.tutorId];
+                    const tut = tutorMap[b.tutorId];
                     const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
                     const when = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(' | ');
                     return (
                       <tr key={b.id} className="border-b align-top">
                         <td className="px-4 py-2 text-sm capitalize">{b.mode || '—'}</td>
-                        <td className="px-4 py-2 text-sm">{t?.name}</td>
+                        <td className="px-4 py-2 text-sm">{tut?.name}</td>
                         <td className="px-4 py-2 text-sm capitalize">{b.modalidad}</td>
                         <td className="px-4 py-2 text-sm">{b.hours}</td>
                         <td className="px-4 py-2 text-sm">{when}</td>
@@ -1118,7 +1178,7 @@ const logout = async () => {
                               await updateDoc(doc(db, 'bookings', b.id), { paymentStatus: 'confirmado' });
                               // Enviar correo de pago confirmado
                               const parentEmail = b.email;
-                              const t = tutorMap[b.tutorId];
+                              const tut = tutorMap[b.tutorId];
                               const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
                               const whenText = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(', ');
                               const tipo = b.mode === 'individual' ? 'Clase individual' : `Paquete ${b.hours} horas`;
@@ -1129,10 +1189,10 @@ const logout = async () => {
 
                               await sendEmailJS(EMAILJS_TPL_PAID, {
                                 to_email: parentEmail,
-                                cc: [t?.email, adminEmail].filter(Boolean).join(','),
+                                cc: [tut?.email, adminEmail].filter(Boolean).join(','),
                                 parentName: b.parentName,
                                 student: b.student,
-                                tutorName: t?.name || 'Tutor',
+                                tutorName: tut?.name || 'Tutor',
                                 modalidad,
                                 tipo,
                                 hours: b.hours,
@@ -1273,7 +1333,13 @@ const logout = async () => {
 
     <div className="flex justify-between gap-2 mt-3">
       <button className="px-3 py-2 rounded-lg border bg-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={() => setConfirmStep(1)}>Atrás</button>
-      <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={confirmBooking}>Confirmar</button>
+      <button
+        className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99] disabled:opacity-50"
+        onClick={confirmBooking}
+        disabled={submitting}
+      >
+        {submitting ? 'Confirmando…' : 'Confirmar'}
+      </button>
     </div>
   </>
 )}
