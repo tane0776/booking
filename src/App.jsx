@@ -35,6 +35,15 @@ const EMAILJS_TPL_PARENT = import.meta.env.VITE_EMAILJS_TEMPLATE_PARENT;   // te
 const EMAILJS_TPL_TUTOR  = import.meta.env.VITE_EMAILJS_TEMPLATE_TUTOR;    // template para TUTORES
 const EMAILJS_TPL_PAID   = import.meta.env.VITE_EMAILJS_TEMPLATE_PAID;     // template pago confirmado (se usará desde Admin)
 
+// Helper para URL absoluta (para imágenes en emails)
+const absUrl = (u) => {
+  if (!u) return '';
+  if (/^https?:\/\//i.test(u)) return u;
+  const origin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
+  if (!origin) return u;
+  return u.startsWith('/') ? origin + u : origin + '/' + u;
+};
+
 async function sendEmailJS(templateId, params) {
   if (!EMAILJS_SERVICE || !EMAILJS_PUBLIC || !templateId) {
     throw new Error('Faltan variables de EmailJS (service/public/template)');
@@ -59,8 +68,10 @@ async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutor
   // 1) correo a PADRES
   await sendEmailJS(EMAILJS_TPL_PARENT, {
     to_email: parentEmail,
-    logoUrl, parentName, student,
-    tutorName, tutorPhoto,
+    logoUrl: absUrl(logoUrl),
+    parentName, student,
+    tutorName,
+    tutorPhoto: absUrl(tutorPhoto),
     modalidad, tipo, hours,
     whenText, total, bookingId,
     notes: notes || '',
@@ -70,11 +81,12 @@ async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutor
   if (tutorEmail) {
     await sendEmailJS(EMAILJS_TPL_TUTOR, {
       to_email: tutorEmail,
-      logoUrl, tutorName,
+      logoUrl: absUrl(logoUrl),
+      tutorName,
       parentName, parentEmail,
       student, modalidad, tipo, hours,
       whenText, bookingId, notes: notes || '',
-      tutorPhoto,
+      tutorPhoto: absUrl(tutorPhoto),
       manageUrlTutor
     });
   }
@@ -200,12 +212,14 @@ const [loginPassword, setLoginPassword] = useState('');
   const [newSlot, setNewSlot] = useState({ tutorId: '', date: '', start: '', end: '', modalidad: 'presencial' });
   const [newTutorName, setNewTutorName] = useState('');
   const [newTutorPhoto, setNewTutorPhoto] = useState('');
+  const [newTutorEmail, setNewTutorEmail] = useState('');
   const [newTutorBio, setNewTutorBio] = useState('');
 
   // Admin: editar tutor
   const [editTutorId, setEditTutorId] = useState('');
   const [editTutorName, setEditTutorName] = useState('');
   const [editTutorPhoto, setEditTutorPhoto] = useState('');
+  const [editTutorEmail, setEditTutorEmail] = useState('');
   const [editTutorBio, setEditTutorBio] = useState('');
 
   // Reservar – filtros rápidos
@@ -263,17 +277,19 @@ const [loginPassword, setLoginPassword] = useState('');
   // Precargar el formulario de edición cuando cambia el tutor seleccionado
   useEffect(() => {
     if (!editTutorId) {
-      setEditTutorName('');
-      setEditTutorPhoto('');
-      setEditTutorBio('');
-      return;
-    }
-    const t = tutors.find(t => t.id === editTutorId);
-    if (t) {
-      setEditTutorName(t.name || '');
-      setEditTutorPhoto(t.photo || '');
-      setEditTutorBio(t.bio || '');
-    }
+  setEditTutorName('');
+  setEditTutorPhoto('');
+  setEditTutorEmail('');
+  setEditTutorBio('');
+  return;
+}
+const t = tutors.find(t => t.id === editTutorId);
+if (t) {
+  setEditTutorName(t.name || '');
+  setEditTutorPhoto(t.photo || '');
+  setEditTutorEmail(t.email || '');
+  setEditTutorBio(t.bio || '');
+}
   }, [editTutorId, tutors]);
 
   const tutorMap = useMemo(() => Object.fromEntries(tutors.map(t => [t.id, t])), [tutors]);
@@ -301,14 +317,16 @@ const logout = async () => {
 };
 
   // Tutor portal actions
-  const addTutor = () => {
+    const addTutor = () => {
     const name = newTutorName.trim();
-    if (!name) return;
+    if (!name) return alert('Escribe el nombre del tutor.');
+    const email = newTutorEmail.trim();
+    if (!email) return alert('Escribe el correo del tutor (para notificaciones).');
     const photo = newTutorPhoto.trim() || '/tutores/default.jpg';
     const bio = newTutorBio.trim() || 'Tutor/a de Lumina.';
-    addDoc(collection(db, 'tutors'), { name, photo, bio })
+    addDoc(collection(db, 'tutors'), { name, photo, email, bio })
       .then(() => {
-        setNewTutorName(''); setNewTutorPhoto(''); setNewTutorBio('');
+        setNewTutorName(''); setNewTutorPhoto(''); setNewTutorEmail(''); setNewTutorBio('');
       })
       .catch((e) => alert('Error al agregar tutor: ' + e.message));
   };
@@ -819,12 +837,17 @@ const logout = async () => {
             {/* Agregar tutor */}
             <div className="rounded-2xl border bg-white p-4 space-y-2">
               <h3 className="font-medium">Agregar tutor</h3>
-              <div className="grid sm:grid-cols-3 gap-2">
+              <div className="grid sm:grid-cols-4 gap-2">
                 <input className="border rounded-lg px-3 py-2" placeholder="Nombre del tutor" value={newTutorName} onChange={e => setNewTutorName(e.target.value)} />
-                <input className="border rounded-lg px-3 py-2" placeholder="Foto (ruta, ej: /tutores/ana.jpg)" value={newTutorPhoto} onChange={e => setNewTutorPhoto(e.target.value)} />
+                <input className="border rounded-lg px-3 py-2" placeholder="Foto (URL o /tutores/ana.jpg)" value={newTutorPhoto} onChange={e => setNewTutorPhoto(e.target.value)} />
+                <input className="border rounded-lg px-3 py-2" placeholder="Correo del tutor" value={newTutorEmail} onChange={e => setNewTutorEmail(e.target.value)} />
                 <input className="border rounded-lg px-3 py-2" placeholder="Breve descripción" value={newTutorBio} onChange={e => setNewTutorBio(e.target.value)} />
               </div>
-              <button className="mt-2 px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={addTutor}>Agregar</button>
+              <div className="flex justify-end">
+                <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={addTutor}>
+                  Agregar
+                </button>
+              </div>
             </div>
 
             {/* Agregar disponibilidad */}
@@ -899,7 +922,7 @@ const logout = async () => {
             </div>
             <div className="rounded-2xl border bg-white p-4 space-y-3">
               <h3 className="font-medium">Editar tutor</h3>
-              <div className="grid sm:grid-cols-4 gap-2">
+              <div className="grid sm:grid-cols-5 gap-2">
                 <select
                   className="border rounded-lg px-3 py-2 bg-white"
                   value={editTutorId}
@@ -917,9 +940,16 @@ const logout = async () => {
                 />
                 <input
                   className="border rounded-lg px-3 py-2"
-                  placeholder="Foto (ruta, ej: /tutores/ana.jpg)"
+                  placeholder="Foto (URL o /tutores/ana.jpg)"
                   value={editTutorPhoto}
                   onChange={e => setEditTutorPhoto(e.target.value)}
+                  disabled={!editTutorId}
+                />
+                <input
+                  className="border rounded-lg px-3 py-2"
+                  placeholder="Correo del tutor"
+                  value={editTutorEmail}
+                  onChange={e => setEditTutorEmail(e.target.value)}
                   disabled={!editTutorId}
                 />
                 <input
@@ -937,9 +967,11 @@ const logout = async () => {
                     if (!editTutorId) return alert('Selecciona un tutor.');
                     const name = editTutorName.trim();
                     if (!name) return alert('El nombre no puede estar vacío.');
+                    const email = editTutorEmail.trim();
+                    if (!email) return alert('El correo del tutor no puede estar vacío.');
                     const photo = editTutorPhoto.trim() || '/tutores/default.jpg';
                     const bio = editTutorBio.trim() || 'Tutor/a de Lumina.';
-                    updateDoc(doc(db, 'tutors', editTutorId), { name, photo, bio })
+                    updateDoc(doc(db, 'tutors', editTutorId), { name, photo, email, bio })
                       .then(() => alert('Información del tutor actualizada.'))
                       .catch((e) => alert('Error al actualizar tutor: ' + e.message));
                   }}
