@@ -28,6 +28,89 @@ const db = getFirestore(appFB);
 
 const auth = getAuth(appFB);
 
+// --- Email confirmations (EmailJS REST) ---
+const EMAILJS_SERVICE = import.meta.env.VITE_EMAILJS_SERVICE_ID;
+const EMAILJS_PUBLIC  = import.meta.env.VITE_EMAILJS_PUBLIC_KEY;
+const EMAILJS_TPL_PARENT = import.meta.env.VITE_EMAILJS_TEMPLATE_PARENT;   // template para PADRES
+const EMAILJS_TPL_TUTOR  = import.meta.env.VITE_EMAILJS_TEMPLATE_TUTOR;    // template para TUTORES
+const EMAILJS_TPL_PAID   = import.meta.env.VITE_EMAILJS_TEMPLATE_PAID;     // template pago confirmado (se usará desde Admin)
+
+async function sendEmailJS(templateId, params) {
+  if (!EMAILJS_SERVICE || !EMAILJS_PUBLIC || !templateId) {
+    throw new Error('Faltan variables de EmailJS (service/public/template)');
+  }
+  const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      service_id: EMAILJS_SERVICE,
+      template_id: templateId,
+      user_id: EMAILJS_PUBLIC,
+      template_params: params,
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error('EmailJS error: ' + t);
+  }
+}
+
+async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutorPhoto, parentName, student, modalidad, tipo, hours, whenText, total, bookingId, notes, manageUrl, manageUrlTutor, logoUrl }) {
+  // 1) correo a PADRES
+  await sendEmailJS(EMAILJS_TPL_PARENT, {
+    to_email: parentEmail,
+    logoUrl, parentName, student,
+    tutorName, tutorPhoto,
+    modalidad, tipo, hours,
+    whenText, total, bookingId,
+    notes: notes || '',
+    manageUrl
+  });
+  // 2) correo a TUTOR (si hay email)
+  if (tutorEmail) {
+    await sendEmailJS(EMAILJS_TPL_TUTOR, {
+      to_email: tutorEmail,
+      logoUrl, tutorName,
+      parentName, parentEmail,
+      student, modalidad, tipo, hours,
+      whenText, bookingId, notes: notes || '',
+      tutorPhoto,
+      manageUrlTutor
+    });
+  }
+}
+// lead time (minutes) to hide near/future slots (e.g., 60 => hide slots that start within the next hour)
+const LEAD_MINUTES = 60;
+
+const parseHM = (hm) => {
+  // 'HH:mm' -> minutes since midnight
+  const [h, m] = hm.split(':').map(Number);
+  return h * 60 + m;
+};
+const toHM = (mins) => {
+  const h = Math.floor(mins / 60).toString().padStart(2, '0');
+  const m = (mins % 60).toString().padStart(2, '0');
+  return `${h}:${m}`;
+};
+const combineDateAndTime = (dateISO, hm) => {
+  const d = new Date(dateISO);
+  const [h, m] = hm.split(':').map(Number);
+  d.setHours(h, m, 0, 0);
+  return d;
+};
+const isSlotFutureWithLead = (s) => {
+  const startDt = combineDateAndTime(s.dateISO, s.start);
+  const now = new Date();
+  const leadMs = LEAD_MINUTES * 60 * 1000;
+  return startDt.getTime() - now.getTime() > leadMs; // must start after lead window
+};
+const overlaps = (aStart, aEnd, bStart, bEnd) => {
+  // times in 'HH:mm'
+  const a0 = parseHM(aStart), a1 = parseHM(aEnd);
+  const b0 = parseHM(bStart), b1 = parseHM(bEnd);
+  return Math.max(a0, b0) < Math.min(a1, b1);
+};
+
 // tutores por defecto (fotos en /public/tutores/*.jpg)
 const DEFAULT_TUTORS = [];
 
@@ -91,7 +174,7 @@ function Fade({ children, className = '', duration = 500 }) {
     return () => clearTimeout(t);
   }, []);
   return (
-    <div className={`transition-opacity duration-[${duration}] ${visible ? 'opacity-100' : 'opacity-0'} ${className}`}>
+    <div className={`transition-opacity duration-500 ${visible ? 'opacity-100' : 'opacity-0'} ${className}`}>
       {children}
     </div>
   );
@@ -230,14 +313,55 @@ const logout = async () => {
       .catch((e) => alert('Error al agregar tutor: ' + e.message));
   };
 
-  const addSlot = () => {
+  const addSlot = async () => {
     const { tutorId, date, start, end, modalidad } = newSlot;
-    if (!tutorId || !date || !start || !end || !modalidad) return alert('Completa todos los campos.');
-    if (end <= start) return alert('La hora de fin debe ser posterior a la de inicio.');
-    const slot = { tutorId, dateISO: toISODate(date), start: formatTime(start), end: formatTime(end), booked: false, modalidad };
-    addDoc(collection(db, 'slots'), slot)
-      .then(() => setNewSlot({ tutorId: '', date: '', start: '', end: '', modalidad: 'presencial' }))
-      .catch((e) => alert('Error al agregar disponibilidad: ' + e.message));
+
+    // Normaliza strings
+    const _tutorId = (tutorId || '').trim();
+    const _date = (date || '').trim();
+    const _start = formatTime((start || '').trim());
+    const _end = formatTime((end || '').trim());
+    const _mod = (modalidad || '').trim();
+
+    // Validaciones específicas y mensajes claros
+    if (!_tutorId) return alert('Selecciona un tutor.');
+    if (!_date) return alert('Selecciona una fecha.');
+    if (!_start || !_end) return alert('Selecciona hora de inicio y fin.');
+    if (!_mod) return alert('Selecciona la modalidad.');
+
+    // Validar formato HH:mm
+    const hmRe = /^\d{2}:\d{2}$/;
+    if (!hmRe.test(_start) || !hmRe.test(_end)) {
+      return alert('Formato de hora inválido. Usa HH:mm.');
+    }
+
+    const startM = parseHM(_start);
+    const endM = parseHM(_end);
+    if (Number.isNaN(startM) || Number.isNaN(endM)) return alert('Hora inválida.');
+    if (endM <= startM) return alert('La hora de fin debe ser posterior a la de inicio.');
+
+    const dateISO = toISODate(_date);
+
+    const WINDOW = 60; // minutos por bloque
+    const STEP = 30;   // desplazamiento
+
+    if (endM - startM < WINDOW) return alert('El bloque debe ser de al menos 60 minutos.');
+
+    try {
+      // generar ventanas deslizantes de 1h cada 30min, todas dentro del bloque
+      const ops = [];
+      for (let t = startM; t + WINDOW <= endM; t += STEP) {
+        const sHM = toHM(t);
+        const eHM = toHM(t + WINDOW);
+        const slot = { tutorId: _tutorId, dateISO, start: sHM, end: eHM, booked: false, modalidad: _mod };
+        ops.push(addDoc(collection(db, 'slots'), slot));
+      }
+      await Promise.all(ops);
+      setNewSlot({ tutorId: '', date: '', start: '', end: '', modalidad: 'presencial' });
+      alert('Disponibilidad agregada como bloques de 1 hora cada 30 minutos.');
+    } catch (e) {
+      alert('Error al agregar disponibilidad: ' + e.message);
+    }
   };
 
   const removeSlot = (id) => {
@@ -246,7 +370,7 @@ const logout = async () => {
 
   // listas filtradas
   const availableSlots = useMemo(() => {
-    let s = slots.filter(s => !s.booked);
+    let s = slots.filter(s => !s.booked && !s.blockedBy && isSlotFutureWithLead(s));
     if (filterTutorId)     s = s.filter(x => x.tutorId === filterTutorId);
     if (filterDate)        s = s.filter(x => sameDay(x.dateISO, filterDate));
     if (filterModalidad)   s = s.filter(x => x.modalidad === filterModalidad);
@@ -255,7 +379,7 @@ const logout = async () => {
 
   // elegibles para paquete (mismo tutor + misma modalidad)
   const pkgEligibleSlots = useMemo(() => {
-    let s = slots.filter(s => !s.booked);
+    let s = slots.filter(s => !s.booked && !s.blockedBy && isSlotFutureWithLead(s));
     if (selectedTutorForPkg)     s = s.filter(x => x.tutorId === selectedTutorForPkg);
     if (selectedModalidadForPkg) s = s.filter(x => x.modalidad === selectedModalidadForPkg);
     return s.sort((a,b) => (a.dateISO + a.start).localeCompare(b.dateISO + b.start));
@@ -296,12 +420,25 @@ const logout = async () => {
 
     try {
       const batch = writeBatch(db);
-      // marcar slots como reservados
-      selectedSlots.forEach(id => {
-        batch.update(doc(db, 'slots', id), { booked: true });
-      });
-      // crear reserva
+      // crear booking id primero
       const bookingRef = doc(collection(db, 'bookings'));
+
+      // marcar seleccionados como reservados
+      selectedSlots.forEach(id => {
+        batch.update(doc(db, 'slots', id), { booked: true, blockedBy: bookingRef.id });
+      });
+
+      // bloquear slots solapados (mismo tutor, misma fecha, misma modalidad)
+      const selectedObjs = slots.filter(s => selectedSlots.includes(s.id));
+      slots.forEach(s => {
+        if (s.booked || s.blockedBy) return;
+        const sameTutor = selectedObjs.some(x => x.tutorId === s.tutorId && x.dateISO === s.dateISO && x.modalidad === s.modalidad && overlaps(x.start, x.end, s.start, s.end));
+        if (sameTutor) {
+          batch.update(doc(db, 'slots', s.id), { blockedBy: bookingRef.id });
+        }
+      });
+
+      // crear reserva
       batch.set(bookingRef, {
         slotIds: selectedSlots.slice(),
         tutorId: selectedTutorForPkg,
@@ -314,7 +451,44 @@ const logout = async () => {
         notes: (notes || '').trim(),
         createdAtISO: new Date().toISOString(),
       });
-      batch.commit().then(() => {
+
+      batch.commit().then(async () => {
+        // enviar correos por EmailJS (sin abrir cliente)
+        try {
+          const t = tutorMap[selectedTutorForPkg || singleSelectedSlot?.tutorId];
+          const slotList = selectedSlots.map(id => slots.find(s => s.id === id)).filter(Boolean);
+          const whenText = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(', ');
+          const tipo = bookingMode === 'individual' ? 'Clase individual' : `Paquete ${selectedPackage} horas`;
+          const hours = bookingMode === 'individual' ? 1 : selectedPackage;
+          const { amount } = computeTotal({
+            mode: bookingMode,
+            modalidad: selectedModalidadForPkg || singleSelectedSlot?.modalidad,
+            hours
+          });
+          const total = amount ? `$${fmtCOP(amount)} COP` : '—';
+
+          await sendReservationEmails({
+            parentEmail: email.trim(),
+            tutorEmail: t?.email || '',
+            tutorName: t?.name || 'Tutor',
+            tutorPhoto: t?.photo || '',
+            parentName: parentName.trim(),
+            student: student.trim(),
+            modalidad: selectedModalidadForPkg || singleSelectedSlot?.modalidad,
+            tipo,
+            hours,
+            whenText,
+            total,
+            bookingId: bookingRef.id,
+            notes: (notes || '').trim(),
+            manageUrl: '#',
+            manageUrlTutor: '#',
+            logoUrl: '/logo-home.png'
+          });
+        } catch (e) {
+          console.warn('Error al enviar emails via EmailJS:', e);
+        }
+
         setSelectedSlots([]);
         setSingleSelectedSlot(null);
         setBookingForm({ parentName: '', email: '', student: '', notes: '' });
@@ -331,8 +505,15 @@ const logout = async () => {
     const booking = bookings.find(b => b.id === bookingId);
     if (!booking) return;
     const batch = writeBatch(db);
+    // liberar slots reservados
     booking.slotIds.forEach(id => {
-      batch.update(doc(db, 'slots', id), { booked: false });
+      batch.update(doc(db, 'slots', id), { booked: false, blockedBy: null });
+    });
+    // liberar slots bloqueados por este booking
+    slots.forEach(s => {
+      if (s.blockedBy === bookingId) {
+        batch.update(doc(db, 'slots', s.id), { blockedBy: null });
+      }
     });
     batch.delete(doc(db, 'bookings', bookingId));
     batch.commit().catch((e) => alert('Error al cancelar: ' + e.message));
