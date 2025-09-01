@@ -6,6 +6,8 @@ import {
 } from 'firebase/firestore';
 
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+// Firebase Storage (para comprobantes de pago)
+import { getStorage, ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // ---------- utilidades ----------
 const uid = () => (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
@@ -26,6 +28,7 @@ console.log("API KEY:", import.meta.env.VITE_FB_API_KEY);
 console.log("FB ProjectID:", firebaseConfig.projectId);
 const appFB = initializeApp(firebaseConfig);
 const db = getFirestore(appFB);
+const storage = getStorage(appFB);
 
 const auth = getAuth(appFB);
 
@@ -69,10 +72,13 @@ async function sendEmailJS(templateId, params) {
   }
 }
 
-async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutorPhoto, parentName, student, modalidad, tipo, hours, whenText, total, bookingId, notes, manageUrl, manageUrlTutor, logoUrl }) {
-  // 1) correo a PADRES
+async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutorPhoto, parentName, student, modalidad, tipo, hours, whenText, total, bookingId, notes, manageUrl, logoUrl }) {
+  const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || '';
+  const ccList = [adminEmail, tutorEmail].filter(Boolean).join(',');
+
   await sendEmailJS(EMAILJS_TPL_PARENT, {
     to_email: parentEmail,
+    cc: ccList,
     logoUrl: absUrl(logoUrl || '/logo-home.png'),
     parentName, student,
     tutorName,
@@ -82,19 +88,6 @@ async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutor
     notes: notes || '',
     manageUrl
   });
-  // 2) correo a TUTOR (si hay email)
-  if (tutorEmail) {
-    await sendEmailJS(EMAILJS_TPL_TUTOR, {
-      to_email: tutorEmail,
-      logoUrl: absUrl(logoUrl || '/logo-home.png'),
-      tutorName,
-      parentName, parentEmail,
-      student, modalidad, tipo, hours,
-      whenText, bookingId, notes: notes || '',
-      tutorPhoto: absUrl(tutorPhoto || DEFAULT_TUTOR_PHOTO),
-      manageUrlTutor
-    });
-  }
 }
 // lead time (minutes) to hide near/future slots (e.g., 60 => hide slots that start within the next hour)
 const LEAD_MINUTES = 60;
@@ -282,9 +275,21 @@ const [loginPassword, setLoginPassword] = useState('');
   const [selectedSlots, setSelectedSlots] = useState([]);
 
   // Confirmación (modal) + datos del padre
+  // Confirmación (modal) + datos del padre
   const [showConfirm, setShowConfirm] = useState(false);
-  const [bookingForm, setBookingForm] = useState({ parentName: '', email: '', student: '', notes: '', paymentRef: '' });
-
+  // 1 = datos; 2 = pago/confirmación; 3 = éxito
+  const [confirmStep, setConfirmStep] = useState(1);
+  const [bookingForm, setBookingForm] = useState({
+    parentName: '',
+    email: '',
+    student: '',
+    subjects: '', // nuevas materias
+    topics: '',   // temas específicos
+    notes: '',
+    paymentRef: ''
+  });
+  // Archivo de comprobante (opcional)
+  const [paymentFile, setPaymentFile] = useState(null);
   // cargar / persistir
   useEffect(() => {
     const unsubTutors = onSnapshot(collection(db, 'tutors'), (snap) => {
@@ -469,6 +474,7 @@ const logout = async () => {
     setSelectedModalidadForPkg(slot.modalidad);
     setBookingMode('individual');
     setShowConfirm(true);
+    setConfirmStep(1);
   };
 
   // abrir confirm para paquete
@@ -478,6 +484,7 @@ const logout = async () => {
     setSingleSelectedSlot(null);
     setBookingMode('paquete');
     setShowConfirm(true);
+    setConfirmStep(1);
   };
 
   // confirmar reserva
@@ -489,6 +496,16 @@ const logout = async () => {
       const batch = writeBatch(db);
       // crear booking id primero
       const bookingRef = doc(collection(db, 'bookings'));
+
+        // Subir comprobante si se adjunta archivo (Storage)
+        let paymentProofUrl = '';
+        if (paymentFile) {
+          const safeName = (paymentFile.name || 'comprobante').replace(/[^\w.\-]/g, '_');
+          const path = `paymentProofs/${bookingRef.id}/${safeName}`;
+          const fileRef = sRef(storage, path);
+          await uploadBytes(fileRef, paymentFile);
+          paymentProofUrl = await getDownloadURL(fileRef);
+        }
 
       // marcar seleccionados como reservados
       selectedSlots.forEach(id => {
@@ -518,6 +535,9 @@ const logout = async () => {
         notes: (notes || '').trim(),
         paymentStatus: 'pendiente',
         paymentRef: (paymentRef || '').trim(),
+        paymentProofUrl,
+        subjects: (bookingForm.subjects || '').trim(),
+        topics: (bookingForm.topics || '').trim(),  
         createdAtISO: new Date().toISOString(),
       });
 
@@ -556,9 +576,9 @@ const logout = async () => {
 
         setSelectedSlots([]);
         setSingleSelectedSlot(null);
-        setBookingForm({ parentName: '', email: '', student: '', notes: '', paymentRef: '' });
-        setShowConfirm(false);
-        alert('¡Reserva confirmada!');
+        setBookingForm({ parentName: '', email: '', student: '', subjects: '', topics: '', notes: '', paymentRef: '' });
+        setPaymentFile(null);
+        setConfirmStep(3); // mostrar pantalla de éxito en el modal
       }).catch((e) => alert('Error al confirmar: ' + e.message));
     } catch (e) {
       alert('Error al confirmar: ' + e.message);
@@ -1055,12 +1075,13 @@ const logout = async () => {
                     <th className="px-4 py-2">Estudiante</th>
                     <th className="px-4 py-2">Padre/Madre</th>
                     <th className="px-4 py-2">Correo</th>
+                    <th className="px-4 py-2">Pago</th>
                     <th className="px-4 py-2">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {bookings.length === 0 && (
-                    <tr><td colSpan="9" className="px-4 py-3 text-gray-600">Aún no hay reservas.</td></tr>
+                    <tr><td colSpan="10" className="px-4 py-3 text-gray-600">Aún no hay reservas.</td></tr>
                   )}
                   {bookings.map(b => {
                     const t = tutorMap[b.tutorId];
@@ -1076,6 +1097,61 @@ const logout = async () => {
                         <td className="px-4 py-2 text-sm">{b.student}</td>
                         <td className="px-4 py-2 text-sm">{b.parentName}</td>
                         <td className="px-4 py-2 text-sm">{b.email}</td>
+                        <td className="px-4 py-2 text-sm">
+                      {b.paymentStatus === 'confirmado' ? (
+                        <span className="text-green-700 font-medium">Confirmado</span>
+                      ) : (
+                        <span className="text-orange-700">Pendiente</span>
+                      )}
+                      {b.paymentProofUrl ? (
+                        <div>
+                          <a href={b.paymentProofUrl} target="_blank" rel="noopener" className="text-indigo-600 hover:underline">Ver comprobante</a>
+                        </div>
+                      ) : (
+                        <div className="text-gray-500">Sin comprobante</div>
+                      )}
+                      {b.paymentStatus !== 'confirmado' && (
+                        <button
+                          className="mt-1 text-sm text-green-700 hover:underline"
+                          onClick={async () => {
+                            try {
+                              await updateDoc(doc(db, 'bookings', b.id), { paymentStatus: 'confirmado' });
+                              // Enviar correo de pago confirmado
+                              const parentEmail = b.email;
+                              const t = tutorMap[b.tutorId];
+                              const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
+                              const whenText = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(', ');
+                              const tipo = b.mode === 'individual' ? 'Clase individual' : `Paquete ${b.hours} horas`;
+                              const modalidad = b.modalidad;
+                              const amount = computeTotalFromSlots(slotList, modalidad);
+                              const total = amount ? `$${fmtCOP(amount)} COP` : '—';
+                              const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || '';
+
+                              await sendEmailJS(EMAILJS_TPL_PAID, {
+                                to_email: parentEmail,
+                                cc: [t?.email, adminEmail].filter(Boolean).join(','),
+                                parentName: b.parentName,
+                                student: b.student,
+                                tutorName: t?.name || 'Tutor',
+                                modalidad,
+                                tipo,
+                                hours: b.hours,
+                                whenText,
+                                total,
+                                bookingId: b.id,
+                                manageUrl: '#'
+                              });
+
+                              alert('Pago confirmado y correo enviado.');
+                            } catch (e) {
+                              alert('Error al confirmar pago: ' + (e?.message || e));
+                            }
+                          }}
+                        >
+                          Confirmar pago
+                        </button>
+                      )}
+                    </td>
                         <td className="px-4 py-2">
                           <button className="text-red-700 hover:underline text-sm transition duration-300" onClick={() => cancelBooking(b.id)}>cancelar</button>
                         </td>
@@ -1096,62 +1172,126 @@ const logout = async () => {
           <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-xl space-y-4 transition-transform duration-300 will-change-transform">
             <h3 className="text-lg font-semibold">Confirmar reserva</h3>
 
-            <div className="text-sm text-gray-700 space-y-1">
-              <div><b>Tipo:</b> {bookingMode === 'individual' ? 'Clase individual' : `Paquete de ${selectedPackage} horas`}</div>
-              <div><b>Tutor:</b> {tutorMap[selectedTutorForPkg || singleSelectedSlot?.tutorId]?.name}</div>
-              <div><b>Modalidad:</b> {selectedModalidadForPkg || singleSelectedSlot?.modalidad}</div>
+            {/* Paso 1: datos del padre/estudiante */}
+{confirmStep === 1 && (
+  <>
+    <div className="text-sm text-gray-700 space-y-1">
+      <div><b>Tipo:</b> {bookingMode === 'individual' ? 'Clase individual' : `Paquete de ${selectedPackage} horas`}</div>
+      <div><b>Tutor:</b> {tutorMap[selectedTutorForPkg || singleSelectedSlot?.tutorId]?.name}</div>
+      <div><b>Modalidad:</b> {selectedModalidadForPkg || singleSelectedSlot?.modalidad}</div>
+      <div className="max-h-28 overflow-auto">
+        <b>Horario(s):</b>
+        <ul className="list-disc ml-5">
+          {selectedSlots.map(id => {
+            const s = slots.find(x => x.id === id);
+            if (!s) return null;
+            return <li key={id}>{new Date(s.dateISO).toLocaleDateString('es-ES')} • {s.start}–{s.end}</li>;
+          })}
+        </ul>
+      </div>
+    </div>
 
-              <div className="max-h-28 overflow-auto">
-                <b>Horario(s):</b>
-                <ul className="list-disc ml-5">
-                  {selectedSlots.map(id => {
-                    const s = slots.find(x => x.id === id);
-                    if (!s) return null;
-                    return <li key={id}>{new Date(s.dateISO).toLocaleDateString('es-ES')} • {s.start}–{s.end}</li>;
-                  })}
-                </ul>
-              </div>
+    <div className="space-y-3 mt-2">
+      <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" placeholder="Nombre del padre/madre" value={bookingForm.parentName} onChange={e => setBookingForm(f => ({ ...f, parentName: e.target.value }))} />
+      <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" type="email" placeholder="Correo electrónico" value={bookingForm.email} onChange={e => setBookingForm(f => ({ ...f, email: e.target.value }))} />
+      <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" placeholder="Nombre del estudiante" value={bookingForm.student} onChange={e => setBookingForm(f => ({ ...f, student: e.target.value }))} />
+      <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" placeholder="Materia(s) a estudiar (ej. Matemáticas, Inglés)" value={bookingForm.subjects} onChange={e => setBookingForm(f => ({ ...f, subjects: e.target.value }))} />
+      <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" placeholder="Temas específicos (opcional)" value={bookingForm.topics} onChange={e => setBookingForm(f => ({ ...f, topics: e.target.value }))} />
+      <textarea className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" rows={3} placeholder="Notas (opcional)" value={bookingForm.notes} onChange={e => setBookingForm(f => ({ ...f, notes: e.target.value }))} />
+    </div>
 
-              {/* Precio final */}
-              <div className="mt-2 p-3 rounded-lg bg-indigo-50">
-                <div><b>Total:</b> {totalInfo.amount ? `$${fmtCOP(totalInfo.amount)}` : '—'}</div>
-                {totalInfo.note && <div className="text-xs text-gray-600">{totalInfo.note}</div>}
-              </div>
-            </div>
+    <div className="flex justify-end gap-2 mt-2">
+      <button className="px-3 py-2 rounded-lg border bg-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={() => setShowConfirm(false)}>Cancelar</button>
+      <button
+        className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]"
+        onClick={() => {
+          if (!bookingForm.parentName.trim() || !bookingForm.email.trim() || !bookingForm.student.trim()) {
+            alert('Por favor completa nombre del padre/madre, correo y nombre del estudiante.');
+            return;
+          }
+          setConfirmStep(2);
+        }}
+      >
+        Continuar
+      </button>
+    </div>
+  </>
+)}
 
-            {/* Form del padre */}
-            <div className="space-y-3">
-              <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" placeholder="Nombre del padre/madre" value={bookingForm.parentName} onChange={e => setBookingForm(f => ({ ...f, parentName: e.target.value }))} />
-              <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" type="email" placeholder="Correo electrónico" value={bookingForm.email} onChange={e => setBookingForm(f => ({ ...f, email: e.target.value }))} />
-              <input className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" placeholder="Nombre del estudiante" value={bookingForm.student} onChange={e => setBookingForm(f => ({ ...f, student: e.target.value }))} />
-              <textarea className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" rows={3} placeholder="Notas (opcional)" value={bookingForm.notes} onChange={e => setBookingForm(f => ({ ...f, notes: e.target.value }))} />
-              <div className="mt-2 rounded-lg border p-3 bg-white">
-                <div className="font-medium mb-2">Pago</div>
-                <p className="text-sm text-gray-600">Escanea el QR de Bancolombia para pagar. Luego ingresa el número de referencia o adjunta la nota en "Notas". Verificaremos manualmente.</p>
-                <div className="mt-3 flex items-center gap-3">
-                  <img src="/qr-bancolombia.png" alt="QR Bancolombia" className="w-40 h-40 object-contain border rounded-md bg-white" />
-                  <div className="flex-1">
-                    <input
-                      className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                      placeholder="Referencia de pago (opcional)"
-                      value={bookingForm.paymentRef}
-                      onChange={e => setBookingForm(f => ({ ...f, paymentRef: e.target.value }))}
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Puedes enviarnos el comprobante por correo respondiendo a la confirmación.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
+{/* Paso 2: confirmación + pago */}
+{confirmStep === 2 && (
+  <>
+    <div className="text-sm text-gray-700 space-y-1">
+      <div><b>Tipo:</b> {bookingMode === 'individual' ? 'Clase individual' : `Paquete de ${selectedPackage} horas`}</div>
+      <div><b>Tutor:</b> {tutorMap[selectedTutorForPkg || singleSelectedSlot?.tutorId]?.name}</div>
+      <div><b>Modalidad:</b> {selectedModalidadForPkg || singleSelectedSlot?.modalidad}</div>
+      <div><b>Estudiante:</b> {bookingForm.student}</div>
+      <div><b>Padre/Madre:</b> {bookingForm.parentName} ({bookingForm.email})</div>
+      {bookingForm.subjects && <div><b>Materia(s):</b> {bookingForm.subjects}</div>}
+      {bookingForm.topics && <div><b>Temas:</b> {bookingForm.topics}</div>}
+      <div className="max-h-28 overflow-auto">
+        <b>Horario(s):</b>
+        <ul className="list-disc ml-5">
+          {selectedSlots.map(id => {
+            const s = slots.find(x => x.id === id);
+            if (!s) return null;
+            return <li key={id}>{new Date(s.dateISO).toLocaleDateString('es-ES')} • {s.start}–{s.end}</li>;
+          })}
+        </ul>
+      </div>
 
-            <div className="flex justify-end gap-2">
-              <button className="px-3 py-2 rounded-lg border bg-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={() => setShowConfirm(false)}>Volver</button>
-              <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={confirmBooking}>Confirmar</button>
-            </div>
-          </div>
+      {/* Precio final */}
+      <div className="mt-2 p-3 rounded-lg bg-indigo-50">
+        <div><b>Total:</b> {totalInfo.amount ? `$${fmtCOP(totalInfo.amount)}` : '—'}</div>
+        {totalInfo.note && <div className="text-xs text-gray-600">{totalInfo.note}</div>}
+      </div>
+    </div>
+
+    {/* Pago */}
+    <div className="mt-3 rounded-lg border p-3 bg-white">
+      <div className="font-medium mb-2">Pago</div>
+      <p className="text-sm text-gray-600">Escanea el QR de Bancolombia para pagar. Luego ingresa el número de referencia o adjunta el comprobante. Verificaremos manualmente.</p>
+      <div className="mt-3 flex items-center gap-3">
+        <img src="/qr-bancolombia.png" alt="QR Bancolombia" className="w-40 h-40 object-contain border rounded-md bg-white" />
+        <div className="flex-1">
+          <input
+            className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            placeholder="Referencia de pago (opcional)"
+            value={bookingForm.paymentRef}
+            onChange={e => setBookingForm(f => ({ ...f, paymentRef: e.target.value }))}
+          />
+          <input
+            type="file"
+            accept="image/*,application/pdf"
+            className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400 mt-2"
+            onChange={(e) => setPaymentFile(e.target.files?.[0] || null)}
+          />
+          <p className="text-xs text-gray-500 mt-1">Puedes adjuntar una imagen o PDF del comprobante (máx. 5 MB).</p>
         </div>
-      )}
+      </div>
+    </div>
 
-      {showLogin && !isTutor && (
+    <div className="flex justify-between gap-2 mt-3">
+      <button className="px-3 py-2 rounded-lg border bg-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={() => setConfirmStep(1)}>Atrás</button>
+      <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={confirmBooking}>Confirmar</button>
+    </div>
+  </>
+)}
+
+{/* Paso 3: éxito */}
+{confirmStep === 3 && (
+  <div className="text-center space-y-3">
+    <div className="text-2xl font-semibold">¡Reserva confirmada!</div>
+    <p className="text-gray-700">Revisa tu correo: te enviamos la confirmación con los detalles de tu clase.</p>
+    <button className="mt-2 px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={() => setShowConfirm(false)}>Cerrar</button>
+  </div>
+  
+)}
+        </div>
+      </div>
+    )}
+
+    {showLogin && !isTutor && (
   <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30 transition-opacity duration-300">
     <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl space-y-4 transition-transform duration-300 will-change-transform">
       <h3 className="text-lg font-semibold">Ingreso de tutor</h3>
@@ -1183,7 +1323,7 @@ const logout = async () => {
           Entrar
         </button>
       </div>
-    </div>
+    </div> 
   </div>
 )}
 
