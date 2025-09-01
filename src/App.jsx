@@ -23,6 +23,7 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FB_MEASUREMENT_ID,
 };
 console.log("API KEY:", import.meta.env.VITE_FB_API_KEY);
+console.log("FB ProjectID:", firebaseConfig.projectId);
 const appFB = initializeApp(firebaseConfig);
 const db = getFirestore(appFB);
 
@@ -292,9 +293,6 @@ const [loginPassword, setLoginPassword] = useState('');
     const unsubSlots = onSnapshot(collection(db, 'slots'), (snap) => {
       setSlots(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
-    const unsubBookings = onSnapshot(collection(db, 'bookings'), (snap) => {
-      setBookings(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
 
     const storedTutor = localStorage.getItem(LS.IS_TUTOR) === '1';
     setIsTutor(storedTutor);
@@ -302,9 +300,19 @@ const [loginPassword, setLoginPassword] = useState('');
     return () => {
       unsubTutors();
       unsubSlots();
-      unsubBookings();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isTutor) {
+      setBookings([]);
+      return;
+    }
+    const unsub = onSnapshot(collection(db, 'bookings'), (snap) => {
+      setBookings(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, [isTutor]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
