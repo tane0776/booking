@@ -36,13 +36,17 @@ const EMAILJS_TPL_TUTOR  = import.meta.env.VITE_EMAILJS_TEMPLATE_TUTOR;    // te
 const EMAILJS_TPL_PAID   = import.meta.env.VITE_EMAILJS_TEMPLATE_PAID;     // template pago confirmado (se usará desde Admin)
 
 // Helper para URL absoluta (para imágenes en emails)
+// B) Versión robusta con dominio base y escape de URL
+const PUBLIC_BASE = import.meta.env.VITE_PUBLIC_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
 const absUrl = (u) => {
   if (!u) return '';
-  if (/^https?:\/\//i.test(u)) return u;
-  const origin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
-  if (!origin) return u;
-  return u.startsWith('/') ? origin + u : origin + '/' + u;
+  const url = (u || '').trim();
+  if (/^https?:\/\//i.test(url)) return encodeURI(url);
+  if (url.startsWith('/')) return encodeURI(`${PUBLIC_BASE}${url}`);
+  return encodeURI(`${PUBLIC_BASE}/${url}`);
 };
+// Placeholder por defecto para fotos de tutor en emails
+const DEFAULT_TUTOR_PHOTO = '/tutores/default.jpg';
 
 async function sendEmailJS(templateId, params) {
   if (!EMAILJS_SERVICE || !EMAILJS_PUBLIC || !templateId) {
@@ -68,10 +72,10 @@ async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutor
   // 1) correo a PADRES
   await sendEmailJS(EMAILJS_TPL_PARENT, {
     to_email: parentEmail,
-    logoUrl: absUrl(logoUrl),
+    logoUrl: absUrl(logoUrl || '/logo-home.png'),
     parentName, student,
     tutorName,
-    tutorPhoto: absUrl(tutorPhoto),
+    tutorPhoto: absUrl(tutorPhoto || DEFAULT_TUTOR_PHOTO),
     modalidad, tipo, hours,
     whenText, total, bookingId,
     notes: notes || '',
@@ -81,12 +85,12 @@ async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutor
   if (tutorEmail) {
     await sendEmailJS(EMAILJS_TPL_TUTOR, {
       to_email: tutorEmail,
-      logoUrl: absUrl(logoUrl),
+      logoUrl: absUrl(logoUrl || '/logo-home.png'),
       tutorName,
       parentName, parentEmail,
       student, modalidad, tipo, hours,
       whenText, bookingId, notes: notes || '',
-      tutorPhoto: absUrl(tutorPhoto),
+      tutorPhoto: absUrl(tutorPhoto || DEFAULT_TUTOR_PHOTO),
       manageUrlTutor
     });
   }
