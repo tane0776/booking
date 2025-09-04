@@ -11,10 +11,31 @@ import { getStorage, ref as sRef, uploadBytes, getDownloadURL } from 'firebase/s
 
 // ---------- utilidades ----------
 const uid = () => (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
-const toISODate = (d) => new Date(d).toISOString();
+// Normaliza a 'YYYY-MM-DD' SIN UTC
+const toISODate = (d) => {
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const dt = (d instanceof Date) ? d : new Date(d);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
 const formatTime = (t) => t.padStart(5, '0');
-const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+// Compara strings 'YYYY-MM-DD'
+const sameDay = (a, b) => !!a && !!b && a === b;
 const fmtCOP = (n) => n?.toLocaleString('es-CO');
+
+const fmtDateLongEs = (isoYmd) => {
+  if (!isoYmd) return '';
+  const [y, m, d] = isoYmd.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return new Intl.DateTimeFormat('es-CO', {
+    timeZone: 'America/Bogota',
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric'
+  }).format(dt);
+};
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FB_API_KEY,
   authDomain: import.meta.env.VITE_FB_AUTH_DOMAIN,
@@ -103,11 +124,11 @@ const toHM = (mins) => {
   const m = (mins % 60).toString().padStart(2, '0');
   return `${h}:${m}`;
 };
+// Construye Date local evitando UTC
 const combineDateAndTime = (dateISO, hm) => {
-  const d = new Date(dateISO);
-  const [h, m] = hm.split(':').map(Number);
-  d.setHours(h, m, 0, 0);
-  return d;
+  const [y, m, d] = dateISO.split('-').map(Number);
+  const [hh, mm] = hm.split(':').map(Number);
+  return new Date(y, m - 1, d, hh, mm, 0, 0);
 };
 const isSlotFutureWithLead = (s) => {
   const startDt = combineDateAndTime(s.dateISO, s.start);
@@ -911,7 +932,7 @@ const logout = async () => {
                   <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
                     {availableSlots.map(s => (
                       <li key={s.id} className="border rounded-2xl bg-white p-5 shadow-sm transition hover:shadow-lg hover:scale-[1.01] duration-300 space-y-2">
-                        <div className="text-sm text-gray-500">{new Date(s.dateISO).toLocaleDateString('es-ES')}</div>
+                        <div className="text-sm text-gray-500">{fmtDateLongEs(s.dateISO)}</div>
                         <div className="text-lg font-medium">{tutorMap[s.tutorId]?.name || 'Tutor'}</div>
                         <div className="text-gray-700">{s.start} – {s.end}</div>
                         <div className="text-xs text-gray-600">Modalidad: {s.modalidad}</div>
@@ -961,7 +982,7 @@ const logout = async () => {
                               : 'hover:shadow-lg hover:scale-[1.01]')
                           }
                         >
-                          <div className="text-sm text-gray-500">{new Date(s.dateISO).toLocaleDateString('es-ES')}</div>
+                          <div className="text-sm text-gray-500">{fmtDateLongEs(s.dateISO)}</div>
                           <div className="text-gray-800">{s.start} – {s.end}</div>
                           <div className="text-xs text-gray-600">Modalidad: {s.modalidad}</div>
                         </li>
@@ -1049,7 +1070,7 @@ const logout = async () => {
                   {slots.map(s => (
                     <li key={s.id} className="flex items-center justify-between border rounded-lg bg-white px-3 py-2">
                       <div className="text-sm">
-                        <span className="text-gray-500">{new Date(s.dateISO).toLocaleDateString('es-ES')}</span>
+                        <span className="text-gray-500">{fmtDateLongEs(s.dateISO)}</span>
                         {' • '}<span>{s.start}–{s.end}</span>
                         {' • '}<span className="font-medium">{tutorMap[s.tutorId]?.name}</span>
                         {' • '}<span className="text-gray-600 capitalize">{s.modalidad}</span>
@@ -1179,7 +1200,7 @@ const logout = async () => {
                   {bookings.map(b => {
                     const tut = tutorMap[b.tutorId];
                     const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
-                    const when = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(' | ');
+                    const when = slotList.map(s => `${fmtDateLongEs(s.dateISO)} ${s.start}–${s.end}`).join(' | ');
                     return (
                       <tr key={b.id} className="border-b align-top">
                         <td className="px-4 py-2 text-sm capitalize">{b.mode || '—'}</td>
@@ -1213,7 +1234,7 @@ const logout = async () => {
                               const parentEmail = b.email;
                               const tut = tutorMap[b.tutorId];
                               const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
-                              const whenText = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(', ');
+                              const whenText = slotList.map(s => `${fmtDateLongEs(s.dateISO)} ${s.start}–${s.end}`).join(', ');
                               const tipo = b.mode === 'individual' ? 'Clase individual' : `Paquete ${b.hours} horas`;
                               const modalidad = b.modalidad;
                               const amount = computeTotalFromSlots(slotList, modalidad);
@@ -1269,7 +1290,7 @@ const logout = async () => {
               {!manageLoading && manageBooking && (() => {
                 const b = manageBooking;
                 const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
-                const when = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(' | ');
+                const when = slotList.map(s => `${fmtDateLongEs(s.dateISO)} ${s.start}–${s.end}`).join(' | ');
                 // Diferencia horaria hasta el primer slot (regla de 24 h)
                 const firstStart = slotList
                   .map(s => combineDateAndTime(s.dateISO, s.start))
@@ -1331,7 +1352,7 @@ const logout = async () => {
           {selectedSlots.map(id => {
             const s = slots.find(x => x.id === id);
             if (!s) return null;
-            return <li key={id}>{new Date(s.dateISO).toLocaleDateString('es-ES')} • {s.start}–{s.end}</li>;
+            return <li key={id}>{fmtDateLongEs(s.dateISO)} • {s.start}–{s.end}</li>;
           })}
         </ul>
       </div>
@@ -1381,7 +1402,7 @@ const logout = async () => {
           {selectedSlots.map(id => {
             const s = slots.find(x => x.id === id);
             if (!s) return null;
-            return <li key={id}>{new Date(s.dateISO).toLocaleDateString('es-ES')} • {s.start}–{s.end}</li>;
+            return <li key={id}>{fmtDateLongEs(s.dateISO)} • {s.start}–{s.end}</li>;
           })}
         </ul>
       </div>
