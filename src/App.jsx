@@ -20,6 +20,30 @@ const toISODate = (d) => {
   const day = String(dt.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 };
+// Normaliza 'dateISO' desde posibles tipos (string 'YYYY-MM-DD', Date, Firestore Timestamp, number)
+const normYMD = (v) => {
+  if (!v) return '';
+  if (typeof v === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+    // Si es ISO completo, recorta a YYYY-MM-DD en zona local
+    const dt = new Date(v);
+    return toISODate(dt);
+  }
+  // Firestore Timestamp
+  if (typeof v === 'object' && typeof v.toDate === 'function') {
+    return toISODate(v.toDate());
+  }
+  // epoch number
+  if (typeof v === 'number') {
+    return toISODate(new Date(v));
+  }
+  // Date u otros
+  try {
+    return toISODate(new Date(v));
+  } catch {
+    return '';
+  }
+};
 const formatTime = (t) => t.padStart(5, '0');
 // Compara strings 'YYYY-MM-DD'
 const sameDay = (a, b) => !!a && !!b && a === b;
@@ -349,7 +373,18 @@ const [loginPassword, setLoginPassword] = useState('');
       setTutors(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
     const unsubSlots = onSnapshot(collection(db, 'slots'), (snap) => {
-      setSlots(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const rows = snap.docs.map(d => {
+        const raw = d.data();
+        return {
+          id: d.id,
+          ...raw,
+          dateISO: normYMD(raw.dateISO || raw.date || null), // fuerza 'YYYY-MM-DD'
+          start: formatTime((raw.start || '').toString()),
+          end: formatTime((raw.end || '').toString()),
+          modalidad: (raw.modalidad || 'presencial')
+        };
+      });
+      setSlots(rows);
     });
 
     const storedTutor = localStorage.getItem(LS.IS_TUTOR) === '1';
@@ -1234,7 +1269,7 @@ const logout = async () => {
                   {bookings.map(b => {
                     const tut = tutorMap[b.tutorId];
                     const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
-                    const when = slotList.map(s => `${fmtDateLongEs(s.dateISO)} ${s.start}–${s.end}`).join(' | ');
+                    const when = slotList.map(s => `${fmtDateLongEs(normYMD(s.dateISO))} ${s.start ?? '--:--'}–${s.end ?? '--:--'}`).join(' | ');
                     return (
                       <tr key={b.id} className="border-b align-top">
                         <td className="px-4 py-2 text-sm capitalize">{b.mode || '—'}</td>
@@ -1324,7 +1359,7 @@ const logout = async () => {
               {!manageLoading && manageBooking && (() => {
                 const b = manageBooking;
                 const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
-                const when = slotList.map(s => `${fmtDateLongEs(s.dateISO)} ${s.start}–${s.end}`).join(' | ');
+                const when = slotList.map(s => `${fmtDateLongEs(normYMD(s.dateISO))} ${s.start ?? '--:--'}–${s.end ?? '--:--'}`).join(' | ');
                 // Diferencia horaria hasta el primer slot (regla de 24 h)
                 const firstStart = slotList
                   .map(s => combineDateAndTime(s.dateISO, s.start))
