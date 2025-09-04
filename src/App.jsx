@@ -249,6 +249,31 @@ function Fade({ children, className = '', duration = 500 }) {
   );
 }
 
+// ErrorBoundary simple para evitar pantalla en blanco
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, err: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, err: error };
+  }
+  componentDidCatch(error, info) {
+    console.error(`[ErrorBoundary:${this.props.name||'App'}]`, error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-4 m-4 rounded-lg border bg-red-50 text-red-800">
+          <div className="font-semibold">Algo salió mal en {this.props.name || 'la aplicación'}.</div>
+          <div className="text-sm mt-1 break-all">{String(this.state.err)}</div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   // pestañas: home | prices | team | book | tutor | admin
   const [tab, setTab] = useState('home');
@@ -1026,8 +1051,9 @@ const logout = async () => {
 
         {/* PORTAL TUTORES */}
         {tab === 'tutor' && isTutor && (
-          <Fade>
-          <section className="space-y-8">
+          <ErrorBoundary name="Portal tutores">
+            <Fade>
+            <section className="space-y-8">
             <h2 className="text-xl font-semibold">Portal de tutores</h2>
 
             {/* Agregar tutor */}
@@ -1067,23 +1093,31 @@ const logout = async () => {
                 <h4 className="font-medium">Todos los horarios</h4>
                 <ul className="space-y-2">
                   {slots.length === 0 && <li className="text-gray-600">Sin horarios todavía.</li>}
-                  {slots.map(s => (
-                    <li key={s.id} className="flex items-center justify-between border rounded-lg bg-white px-3 py-2">
-                      <div className="text-sm">
-                        <span className="text-gray-500">{fmtDateLongEs(s.dateISO)}</span>
-                        {' • '}<span>{s.start}–{s.end}</span>
-                        {' • '}<span className="font-medium">{tutorMap[s.tutorId]?.name}</span>
-                        {' • '}<span className="text-gray-600 capitalize">{s.modalidad}</span>
-                        {s.booked && <span className="ml-2 text-green-700 font-medium">(reservado)</span>}
-                      </div>
-                      <button className="text-red-700 hover:underline transition duration-300" onClick={() => removeSlot(s.id)}>eliminar</button>
-                    </li>
-                  ))}
+                  {(slots || []).map((s) => {
+                    if (!s || !s.id) return null;
+                    const tutorName = tutorMap[s.tutorId]?.name || 'Tutor';
+                    const dateText = fmtDateLongEs(s.dateISO || '');
+                    const start = s.start || '--:--';
+                    const end = s.end || '--:--';
+                    return (
+                      <li key={s.id} className="flex items-center justify-between border rounded-lg bg-white px-3 py-2">
+                        <div className="text-sm">
+                          <span className="text-gray-500">{dateText}</span>
+                          {' • '}<span>{start}–{end}</span>
+                          {' • '}<span className="font-medium">{tutorName}</span>
+                          {' • '}<span className="text-gray-600 capitalize">{s.modalidad || '—'}</span>
+                          {s.booked && <span className="ml-2 text-green-700 font-medium">(reservado)</span>}
+                        </div>
+                        <button className="text-red-700 hover:underline transition duration-300" onClick={() => removeSlot(s.id)}>eliminar</button>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             </div>
-          </section>
-          </Fade>
+            </section>
+            </Fade>
+          </ErrorBoundary>
         )}
 
         {/* ADMIN */}
