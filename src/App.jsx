@@ -75,6 +75,7 @@ async function sendEmailJS(templateId, params) {
 async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutorPhoto, parentName, student, modalidad, tipo, hours, whenText, total, bookingId, notes, manageUrl, logoUrl }) {
   const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || '';
   const ccList = [adminEmail, tutorEmail].filter(Boolean).join(',');
+  const manage = manageUrl || `${PUBLIC_BASE}/#/manage/${bookingId}`;
 
   await sendEmailJS(EMAILJS_TPL_PARENT, {
     to_email: parentEmail,
@@ -86,7 +87,7 @@ async function sendReservationEmails({ parentEmail, tutorEmail, tutorName, tutor
     modalidad, tipo, hours,
     whenText, total, bookingId,
     notes: notes || '',
-    manageUrl
+    manageUrl: manage
   });
 }
 // lead time (minutes) to hide near/future slots (e.g., 60 => hide slots that start within the next hour)
@@ -230,6 +231,11 @@ function Fade({ children, className = '', duration = 500 }) {
 export default function App() {
   // pestañas: home | prices | team | book | tutor | admin
   const [tab, setTab] = useState('home');
+  // Gestión de reservas por enlace (#/manage/:id)
+  const [manageId, setManageId] = useState('');
+  const [manageBooking, setManageBooking] = useState(null);
+  const [manageLoading, setManageLoading] = useState(false);
+  const WHATSAPP_URL = import.meta.env.VITE_WHATSAPP_URL || '#';
 
   // tutor login
 // tutor auth (Firebase)
@@ -320,6 +326,33 @@ const [loginPassword, setLoginPassword] = useState('');
     return () => unsub();
   }, [isTutor]);
 
+  // Cargar reserva para la página pública de gestión
+  useEffect(() => {
+    if (!manageId) {
+      setManageBooking(null);
+      return;
+    }
+    setManageLoading(true);
+    getDoc(doc(db, 'bookings', manageId))
+      .then(snap => setManageBooking(snap.exists() ? ({ id: snap.id, ...snap.data() }) : null))
+      .catch(() => setManageBooking(null))
+      .finally(() => setManageLoading(false));
+  }, [manageId]);
+
+  // Router simple basado en hash: #/manage/:id
+  useEffect(() => {
+    const applyHash = () => {
+      const h = (location.hash || '').replace(/^#\/?/, '');
+      const parts = h.split('/');
+      if (parts[0] === 'manage' && parts[1]) {
+        setManageId(parts[1]);
+        setTab('manage');
+      }
+    };
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+  }, []);
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
       setIsTutor(!!user);
@@ -624,7 +657,7 @@ const logout = async () => {
           total,
           bookingId: bookingRef.id,
           notes: (notes || '').trim(),
-          manageUrl: '#',
+          manageUrl: `${PUBLIC_BASE}/#/manage/${bookingRef.id}`,
           manageUrlTutor: '#',
           logoUrl: '/logo-home.png'
         });
@@ -1222,6 +1255,59 @@ const logout = async () => {
               </table>
             </div>
           </section>
+          </Fade>
+        )}
+        {/* MANAGE: página pública para gestionar reserva por enlace */}
+        {tab === 'manage' && (
+          <Fade>
+            <section className="space-y-6">
+              <h2 className="text-xl font-semibold">Gestionar mi reserva</h2>
+              {manageLoading && <div className="text-gray-600">Cargando reserva…</div>}
+              {!manageLoading && !manageBooking && (
+                <div className="rounded-2xl border bg-white p-4">No encontramos esta reserva. Verifica el enlace.</div>
+              )}
+              {!manageLoading && manageBooking && (() => {
+                const b = manageBooking;
+                const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
+                const when = slotList.map(s => `${new Date(s.dateISO).toLocaleDateString('es-ES')} ${s.start}–${s.end}`).join(' | ');
+                // Diferencia horaria hasta el primer slot (regla de 24 h)
+                const firstStart = slotList
+                  .map(s => combineDateAndTime(s.dateISO, s.start))
+                  .sort((a,c) => a.getTime() - c.getTime())[0];
+                const hoursLeft = firstStart ? (firstStart.getTime() - Date.now()) / 36e5 : 0;
+                const canChange = hoursLeft >= 24;
+                return (
+                  <div className="rounded-2xl border bg-white p-4 space-y-3">
+                    <div><b>Reserva:</b> {b.id}</div>
+                    <div><b>Estudiante:</b> {b.student}</div>
+                    <div><b>Tutor:</b> {tutorMap[b.tutorId]?.name || 'Tutor'}</div>
+                    <div><b>Modalidad:</b> {b.modalidad}</div>
+                    <div><b>Tipo:</b> {b.mode === 'individual' ? 'Clase individual' : `Paquete ${b.hours} horas`}</div>
+                    <div><b>Horario(s):</b> {when}</div>
+                    <div><b>Estado de pago:</b> {b.paymentStatus || 'pendiente'}</div>
+                    <div className="p-3 rounded-lg bg-indigo-50 text-sm">
+                      {canChange ? (
+                        <>
+                          <div className="font-medium">Puedes solicitar un cambio de horario.</div>
+                          <p>Por ahora los cambios se gestionan por WhatsApp para coordinar disponibilidad.</p>
+                          <div className="mt-2 flex gap-2">
+                            <a className="px-3 py-2 rounded-lg bg-green-600 text-white transition hover:opacity-95" href={WHATSAPP_URL} target="_blank" rel="noopener">Contactar por WhatsApp</a>
+                            <button className="px-3 py-2 rounded-lg border" onClick={() => setTab('book')}>Ir a reservar</button>
+                          </div>
+                          <p className="text-xs text-gray-600 mt-2">Regla: solo se permiten cambios con al menos 24 horas de anticipación.</p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="font-medium">No es posible cambiar la reserva.</div>
+                          <p>Faltan menos de 24 horas para tu clase. Si necesitas ayuda, contáctanos por WhatsApp.</p>
+                          <a className="inline-block mt-2 px-3 py-2 rounded-lg bg-green-600 text-white transition hover:opacity-95" href={WHATSAPP_URL} target="_blank" rel="noopener">Contactar por WhatsApp</a>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </section>
           </Fade>
         )}
       </main>
