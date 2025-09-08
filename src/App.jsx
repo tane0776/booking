@@ -365,6 +365,9 @@ const [loginPassword, setLoginPassword] = useState('');
   const [newTutorPhoto, setNewTutorPhoto] = useState('');
   const [newTutorEmail, setNewTutorEmail] = useState('');
   const [newTutorBio, setNewTutorBio] = useState('');
+  // micro-animaciones al elegir opciones en "Agregar disponibilidad"
+  const [bumpTutor, setBumpTutor] = useState(false);
+  const [bumpModal, setBumpModal] = useState(false);
 
   // Paso a paso para agregar disponibilidad
   const canChooseModalidad = !!newSlot.tutorId;
@@ -1193,49 +1196,79 @@ const logout = async () => {
               <h3 className="font-medium">Agregar disponibilidad</h3>
               {/* Paso 1: Tutor */}
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                <select
-                  className="border rounded-lg px-3 py-2 bg-white"
-                  value={newSlot.tutorId}
-                  onChange={e => setNewSlot(s => ({ ...s, tutorId: e.target.value }))}
-                >
-                  <option value="">Seleccionar tutor</option>
-                  {tutors.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
+                {tutors.length === 0 ? (
+                  <div className="text-gray-600">Primero agrega tutores en Administración.</div>
+                ) : (
+                  tutors.map(t => {
+                    const selected = newSlot.tutorId === t.id;
+                    return (
+                      <button
+                        type="button"
+                        key={t.id}
+                        onClick={() => {
+                          setNewSlot(s => ({ ...s, tutorId: t.id }));
+                          setBumpTutor(true);
+                          setTimeout(() => setBumpTutor(false), 250);
+                        }}
+                        className={
+                          'group relative flex flex-col items-center gap-2 border rounded-xl bg-white p-3 transition duration-200 hover:shadow focus:outline-none ' +
+                          (selected ? 'ring-2 ring-indigo-400' : '') + ' ' +
+                          (bumpTutor && selected ? 'scale-[1.01]' : '')
+                        }
+                        title={t.name}
+                      >
+                        <img
+                          src={t.photo || '/tutores/default.jpg'}
+                          alt={t.name}
+                          className={'w-20 h-20 rounded-full object-cover border transition duration-200 ' + (selected ? 'scale-[1.02]' : '')}
+                        />
+                        <span className="text-sm font-medium text-center">{t.name}</span>
+                      </button>
+                    );
+                  })
+                )}
               </div>
 
               {/* Paso 2: Modalidad (se muestra cuando hay tutor) */}
               {canChooseModalidad && (
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <Fade className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   <select
-                    className="border rounded-lg px-3 py-2 bg-white"
+                    className={
+                      'border rounded-lg px-3 py-2 bg-white transition duration-200 transform ' +
+                      (bumpModal ? 'ring-2 ring-indigo-300 scale-[1.01]' : 'focus:ring-2 focus:ring-indigo-400')
+                    }
                     value={newSlot.modalidad}
-                    onChange={e => setNewSlot(s => ({ ...s, modalidad: e.target.value }))}
+                    onChange={e => {
+                      setNewSlot(s => ({ ...s, modalidad: e.target.value }));
+                      setBumpModal(true);
+                      setTimeout(() => setBumpModal(false), 250);
+                    }}
                   >
                     {MODALIDADES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                   </select>
-                </div>
+                </Fade>
               )}
 
               {/* Paso 3: Fecha y hora + repetición (se muestra cuando hay modalidad) */}
               {canChooseDateTime && (
-                <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
+                <Fade className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
                   {/* Hora inicio */}
                   <input
                     type="time"
-                    className="border rounded-lg px-3 py-2 bg-white"
+                    className="border rounded-lg px-3 py-2 bg-white transition duration-200 focus:ring-2 focus:ring-indigo-400"
                     value={newSlot.start}
                     onChange={e => setNewSlot(s => ({ ...s, start: e.target.value }))}
                   />
                   {/* Hora fin */}
                   <input
                     type="time"
-                    className="border rounded-lg px-3 py-2 bg-white"
+                    className="border rounded-lg px-3 py-2 bg-white transition duration-200 focus:ring-2 focus:ring-indigo-400"
                     value={newSlot.end}
                     onChange={e => setNewSlot(s => ({ ...s, end: e.target.value }))}
                   />
                   {/* Modo: específica o recurrente */}
                   <select
-                    className="border rounded-lg px-3 py-2 bg-white"
+                    className="border rounded-lg px-3 py-2 bg-white transition duration-200 focus:ring-2 focus:ring-indigo-400"
                     value={newSlot.recurMode}
                     onChange={e => setNewSlot(s => ({ ...s, recurMode: e.target.value }))}
                   >
@@ -1245,7 +1278,7 @@ const logout = async () => {
                   {/* Día de la semana — SOLO si es recurrente */}
                   {newSlot.recurMode === 'range' && (
                     <select
-                      className="border rounded-lg px-3 py-2 bg-white"
+                      className="border rounded-lg px-3 py-2 bg-white transition duration-200 focus:ring-2 focus:ring-indigo-400"
                       value={newSlot.weekday}
                       onChange={e => setNewSlot(s => ({ ...s, weekday: e.target.value }))}
                     >
@@ -1257,7 +1290,7 @@ const logout = async () => {
                   {newSlot.recurMode === 'single' && (
                     <input
                       type="date"
-                      className="border rounded-lg px-3 py-2 bg-white sm:col-span-2"
+                      className="border rounded-lg px-3 py-2 bg-white sm:col-span-2 transition duration-200 focus:ring-2 focus:ring-indigo-400"
                       value={newSlot.date}
                       onChange={e => setNewSlot(s => ({ ...s, date: e.target.value }))}
                     />
@@ -1267,17 +1300,16 @@ const logout = async () => {
                     <>
                       <input
                         type="date"
-                        className="border rounded-lg px-3 py-2 bg-white"
+                        className="border rounded-lg px-3 py-2 bg-white transition duration-200 focus:ring-2 focus:ring-indigo-400"
                         placeholder="Desde"
                         value={newSlot.rangeStart}
                         onChange={e => {
                           const v = e.target.value;
                           setNewSlot(s => {
-                            // Si no hay weekday aún, tomarlo del día de la semana de rangeStart
                             let wk = s.weekday;
                             if (!wk && v) {
                               const d = new Date(v);
-                              if (!isNaN(d)) wk = String(d.getDay()); // 0=Dom..6=Sáb
+                              if (!isNaN(d)) wk = String(d.getDay());
                             }
                             return { ...s, rangeStart: v, weekday: wk };
                           });
@@ -1285,7 +1317,7 @@ const logout = async () => {
                       />
                       <input
                         type="date"
-                        className="border rounded-lg px-3 py-2 bg-white"
+                        className="border rounded-lg px-3 py-2 bg-white transition duration-200 focus:ring-2 focus:ring-indigo-400"
                         placeholder="Hasta"
                         value={newSlot.rangeEnd}
                         onChange={e => {
@@ -1294,7 +1326,7 @@ const logout = async () => {
                             let wk = s.weekday;
                             if (!wk && v) {
                               const d = new Date(v);
-                              if (!isNaN(d)) wk = String(d.getDay()); // 0=Dom..6=Sáb
+                              if (!isNaN(d)) wk = String(d.getDay());
                             }
                             return { ...s, rangeEnd: v, weekday: wk };
                           });
@@ -1302,10 +1334,10 @@ const logout = async () => {
                       />
                     </>
                   )}
-                </div>
+                </Fade>
               )}
               <button
-                className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99] disabled:opacity-50"
+                className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 onClick={addSlot}
                 disabled={!addSlotGuard.ok}
                 title={addSlotGuard.ok ? 'Agregar disponibilidad' : addSlotGuard.reason || 'Completa los campos'}
