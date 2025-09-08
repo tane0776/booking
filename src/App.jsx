@@ -361,6 +361,8 @@ const [loginPassword, setLoginPassword] = useState('');
     rangeStart: '',       // para recurrente
     rangeEnd: ''
   });
+  // Selección múltiple de celdas (vista semanal) para crear varias disponibilidades de una vez
+  const [selectedCells, setSelectedCells] = useState([]); // [{ dateISO, start, end }]
   const [newTutorName, setNewTutorName] = useState('');
   const [newTutorPhoto, setNewTutorPhoto] = useState('');
   const [newTutorEmail, setNewTutorEmail] = useState('');
@@ -388,9 +390,12 @@ const [loginPassword, setLoginPassword] = useState('');
       }
       // Validar según modo
       if (ok && newSlot.recurMode === 'single') {
-        if (!newSlot.date) {
+        // válido si: (A) hay selección múltiple de celdas, o (B) hay date+start+end individuales
+        const hasMulti = Array.isArray(selectedCells) && selectedCells.length > 0;
+        const hasSingle = !!(newSlot.date && newSlot.start && newSlot.end);
+        if (!hasMulti && !hasSingle) {
           ok = false;
-          reason = 'Selecciona la fecha específica';
+          reason = 'Selecciona uno o más bloques en la semana, o elige fecha/hora individual.';
         }
       }
       if (ok && newSlot.recurMode === 'range') {
@@ -417,7 +422,7 @@ const [loginPassword, setLoginPassword] = useState('');
     }
 
     return { ok, reason };
-  }, [newSlot, canChooseDateTime]);
+  }, [newSlot, canChooseDateTime, selectedCells]);
 
   // ----- Mini calendario semanal (para seleccionar fecha en "Fecha específica") -----
   const [weekAnchor, setWeekAnchor] = useState(() => {
@@ -451,6 +456,18 @@ const [loginPassword, setLoginPassword] = useState('');
       return x;
     });
   };
+
+  // Horas visibles en la grilla semanal (cada 30 min)
+  const WEEK_HOURS = useMemo(() => {
+    const out = [];
+    // de 07:00 a 20:00 cada 30 min
+    for (let h = 7; h <= 19; h++) {
+      out.push(`${String(h).padStart(2,'0')}:00`);
+      out.push(`${String(h).padStart(2,'0')}:30`);
+    }
+    out.push('20:00');
+    return out;
+  }, []);
 
   // Admin: editar tutor
   const [editTutorId, setEditTutorId] = useState('');
@@ -654,11 +671,55 @@ const logout = async () => {
     // Construir lista de fechas a partir del modo
     let dates = [];
     if (recurMode === 'single') {
-      if (!date) return alert('Selecciona la fecha específica.');
-      const iso = toISODate(date);
-      // No exigimos weekday en modo "fecha específica"; se infiere del propio iso si se requiere mostrar en UI.
-      dates = [iso];
+      const hasMulti = Array.isArray(selectedCells) && selectedCells.length > 0;
+      if (!hasMulti && !date) return alert('Selecciona la fecha específica.');
+      if (hasMulti) {
+        // Validar que todas las celdas tengan formato correcto y no sean pasadas
+        const invalid = selectedCells.some(c => !c.dateISO || !/^\d{4}-\d{2}-\d{2}$/.test(c.dateISO) || !c.start || !c.end);
+        if (invalid) return alert('Selección inválida. Intenta de nuevo.');
+        dates = []; // lo derivamos de selectedCells
+      } else {
+        const iso = toISODate(date);
+        dates = [iso];
+      }
+
+      try {
+        const ops = [];
+        if (hasMulti) {
+          for (const cell of selectedCells) {
+            const slot = { tutorId: _tutorId, dateISO: cell.dateISO, start: cell.start, end: cell.end, booked: false, blockedBy: null, modalidad: _mod };
+            ops.push(addDoc(collection(db, 'slots'), slot));
+          }
+        } else {
+          // modo single clásico: ventana deslizada entre start/end
+          for (let t = startM; t + WINDOW <= endM; t += STEP) {
+            const sHM = toHM(t);
+            const eHM = toHM(t + WINDOW);
+            const slot = { tutorId: _tutorId, dateISO: dates[0], start: sHM, end: eHM, booked: false, blockedBy: null, modalidad: _mod };
+            ops.push(addDoc(collection(db, 'slots'), slot));
+          }
+        }
+        await Promise.all(ops);
+        setSelectedCells([]);
+        setNewSlot({
+          tutorId: '',
+          weekday: '',
+          start: '',
+          end: '',
+          modalidad: 'presencial',
+          recurMode: 'single',
+          date: '',
+          rangeStart: '',
+          rangeEnd: ''
+        });
+        alert(`Disponibilidad agregada${hasMulti ? `: ${ops.length} bloque(s).` : `: ${dates.length} día(s) con bloques de 1 hora cada 30 minutos.`}`);
+        return;
+      } catch (e) {
+        alert('Error al agregar disponibilidad: ' + e.message);
+        return;
+      }
     } else {
+      // --- recurrente ---
       // Recurrente entre rango de fechas
       if (!rangeStart || !rangeEnd) return alert('Selecciona fecha "Desde" y "Hasta".');
       const isoStart = toISODate(rangeStart);
@@ -1231,34 +1292,65 @@ const logout = async () => {
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {tutors.length === 0 ? (
                   <div className="text-gray-600">Primero agrega tutores en Administración.</div>
-                ) : (
-                  tutors.map(t => {
-                    const selected = newSlot.tutorId === t.id;
-                    return (
-                      <button
+                ) : newSlot.tutorId ? (
+                  // Mostrar SOLO el tutor seleccionado
+                  (() => {
+                    const t = tutors.find(x => x.id === newSlot.tutorId);
+                    if (!t) return (
+                      <div className="text-gray-600">El tutor seleccionado ya no existe. <button
                         type="button"
-                        key={t.id}
-                        onClick={() => {
-                          setNewSlot(s => ({ ...s, tutorId: t.id }));
-                          setBumpTutor(true);
-                          setTimeout(() => setBumpTutor(false), 250);
-                        }}
-                        className={
-                          'group relative flex flex-col items-center gap-2 border rounded-xl bg-white p-3 transition duration-200 hover:shadow focus:outline-none ' +
-                          (selected ? 'ring-2 ring-indigo-400' : '') + ' ' +
-                          (bumpTutor && selected ? 'scale-[1.01]' : '')
-                        }
-                        title={t.name}
-                      >
-                        <img
-                          src={t.photo || '/tutores/default.jpg'}
-                          alt={t.name}
-                          className={'w-20 h-20 rounded-full object-cover border transition duration-200 ' + (selected ? 'scale-[1.02]' : '')}
-                        />
-                        <span className="text-sm font-medium text-center">{t.name}</span>
-                      </button>
+                        className="ml-1 text-indigo-600 hover:underline"
+                        onClick={() => setNewSlot(s => ({ ...s, tutorId: '' }))}
+                      >Elegir de nuevo</button></div>
                     );
-                  })
+                    return (
+                      <div className="col-span-full flex items-center justify-between border rounded-xl bg-white p-4">
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={t.photo || '/tutores/default.jpg'}
+                            alt={t.name}
+                            className="w-16 h-16 rounded-full object-cover border"
+                          />
+                          <div>
+                            <div className="text-sm text-gray-500">Tutor seleccionado</div>
+                            <div className="text-lg font-medium">{t.name}</div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 transition duration-200"
+                          onClick={() => setNewSlot(s => ({ ...s, tutorId: '' }))}
+                          title="Cambiar tutor"
+                        >
+                          Cambiar tutor
+                        </button>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  // Mostrar rejilla de selección (ninguno seleccionado aún)
+                  tutors.map(t => (
+                    <button
+                      type="button"
+                      key={t.id}
+                      onClick={() => {
+                        setNewSlot(s => ({ ...s, tutorId: t.id }));
+                        setBumpTutor(true);
+                        setTimeout(() => setBumpTutor(false), 250);
+                      }}
+                      className={
+                        'group relative flex flex-col items-center gap-2 border rounded-xl bg-white p-3 transition duration-200 hover:shadow focus:outline-none '
+                      }
+                      title={t.name}
+                    >
+                      <img
+                        src={t.photo || '/tutores/default.jpg'}
+                        alt={t.name}
+                        className={'w-20 h-20 rounded-full object-cover border transition duration-200'}
+                      />
+                      <span className="text-sm font-medium text-center">{t.name}</span>
+                    </button>
+                  ))
                 )}
               </div>
 
@@ -1321,18 +1413,13 @@ const logout = async () => {
                   )}
                   {/* Si es fecha específica */}
                   {newSlot.recurMode === 'single' && (
-                    <div className="sm:col-span-4">
+                    <div className="sm:col-span-6">
+                      {/* Header navegación de semana */}
                       <div className="flex items-center justify-between mb-2">
                         <button
                           type="button"
                           className="px-2 py-1 rounded border bg-white hover:bg-gray-50"
-                          onClick={() => {
-                            setWeekAnchor(prev => {
-                              const p = new Date(prev);
-                              p.setDate(p.getDate() - 7);
-                              return p;
-                            });
-                          }}
+                          onClick={() => setWeekAnchor(prev => { const p = new Date(prev); p.setDate(p.getDate()-7); return p; })}
                         >
                           ← Semana anterior
                         </button>
@@ -1342,49 +1429,114 @@ const logout = async () => {
                         <button
                           type="button"
                           className="px-2 py-1 rounded border bg-white hover:bg-gray-50"
-                          onClick={() => {
-                            setWeekAnchor(prev => {
-                              const n = new Date(prev);
-                              n.setDate(n.getDate() + 7);
-                              return n;
-                            });
-                          }}
+                          onClick={() => setWeekAnchor(prev => { const n = new Date(prev); n.setDate(n.getDate()+7); return n; })}
                         >
                           Siguiente semana →
                         </button>
                       </div>
 
-                      <div className="grid grid-cols-7 gap-2">
-                        {weekDays(weekAnchor).map(d => {
-                          const ymd = formatYMD(d);
-                          const selected = newSlot.date === ymd;
-                          const isPast = new Date(ymd) < new Date(toISODate(new Date()));
+                      {/* Cabecera días */}
+                      <div className="grid grid-cols-8 gap-1 text-xs text-gray-600 mb-1">
+                        <div className="px-2 py-1" />
+                        {weekDays(weekAnchor).map(d => (
+                          <div key={formatYMD(d)} className="px-2 py-1 text-center">
+                            <div className="font-medium">{WEEKDAYS[d.getDay()].label.slice(0,3)}</div>
+                            <div>{String(d.getDate()).padStart(2,'0')}/{String(d.getMonth()+1).padStart(2,'0')}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Grilla semanal de horas × días */}
+                      <div className="grid grid-cols-8 gap-1">
+                        {/* Columna de horas */}
+                        <div className="space-y-1">
+                          {WEEK_HOURS.map(hm => (
+                            <div key={hm} className="h-9 flex items-center justify-end pr-2 text-xs text-gray-500">{hm}</div>
+                          ))}
+                        </div>
+
+                        {/* 7 columnas: lunes a domingo */}
+                        {weekDays(weekAnchor).map(dayDate => {
+                          const ymd = formatYMD(dayDate);
+                          const isPastDay = new Date(ymd) < new Date(toISODate(new Date()));
                           return (
-                            <button
-                              key={ymd}
-                              type="button"
-                              onClick={() => !isPast && setNewSlot(s => ({ ...s, date: ymd }))}
-                              className={
-                                'p-2 rounded-lg border bg-white text-center transition duration-200 ' +
-                                (selected ? 'ring-2 ring-indigo-400 font-medium' : 'hover:shadow') + ' ' +
-                                (isPast ? 'opacity-40 cursor-not-allowed' : '')
-                              }
-                              title={fmtDateLongEs(ymd)}
-                            >
-                              <div className="text-xs text-gray-500">{WEEKDAYS[d.getDay()].label.slice(0,3)}</div>
-                              <div className="text-lg leading-none">{d.getDate()}</div>
-                              <div className="text-[11px] text-gray-500">{String(d.getMonth()+1).padStart(2,'0')}/{String(d.getFullYear()).slice(2)}</div>
-                            </button>
+                            <div key={ymd} className="space-y-1">
+                              {WEEK_HOURS.map(hm => {
+                                // cada celda representa inicio hm con duración 60 min
+                                const startHM = hm;
+                                const endDt = (() => {
+                                  const [hh, mm] = hm.split(':').map(Number);
+                                  const base = new Date(0,0,1,hh,mm,0,0);
+                                  base.setMinutes(base.getMinutes() + 60);
+                                  return `${String(base.getHours()).padStart(2,'0')}:${String(base.getMinutes()).padStart(2,'0')}`;
+                                })();
+                                const isPast = isPastDay || combineDateAndTime(ymd, startHM) < new Date();
+                                const key = `${ymd}_${startHM}`;
+                                const multiSelected = selectedCells.some(c => c.dateISO === ymd && c.start === startHM);
+                                const isSelected = multiSelected; // usamos multi-select como fuente de verdad
+                                return (
+                                  <button
+                                    key={key}
+                                    type="button"
+                                    disabled={isPast}
+                                    onClick={() => {
+                                      if (isPast) return;
+                                      setSelectedCells(prev => {
+                                        const exists = prev.some(c => c.dateISO === ymd && c.start === startHM);
+                                        if (exists) {
+                                          return prev.filter(c => !(c.dateISO === ymd && c.start === startHM));
+                                        }
+                                        return [...prev, { dateISO: ymd, start: startHM, end: endDt }];
+                                      });
+                                    }}
+                                    className={
+                                      'h-9 w-full rounded border text-xs transition flex items-center justify-center ' +
+                                      (isPast ? 'bg-gray-100 text-gray-400 cursor-not-allowed ' : 'bg-white hover:shadow ') +
+                                      (isSelected ? 'ring-2 ring-indigo-400 font-medium' : '')
+                                    }
+                                    title={`${fmtDateLongEs(ymd)} ${startHM}–${endDt}`}
+                                  >
+                                    {isSelected ? '✓' : ''}
+                                  </button>
+                                );
+                              })}
+                            </div>
                           );
                         })}
                       </div>
 
-                      {/* Valor seleccionado */}
-                      <div className="mt-2 text-sm text-gray-700">
-                        {newSlot.date
-                          ? <>Fecha seleccionada: <b>{fmtDateLongEs(newSlot.date)}</b></>
-                          : <span className="text-gray-500">Elige un día de la semana</span>
-                        }
+                      {/* Resumen de selección */}
+                      <div className="mt-3 text-sm text-gray-700 space-y-2">
+                        {selectedCells.length > 0 ? (
+                          <>
+                            <div>
+                              Seleccionados: <b>{selectedCells.length}</b> bloque(s)
+                            </div>
+                            <div className="max-h-28 overflow-auto border rounded p-2 bg-gray-50 text-xs">
+                              {selectedCells
+                                .slice()
+                                .sort((a,b) => (a.dateISO + a.start).localeCompare(b.dateISO + b.start))
+                                .map((c, idx) => (
+                                  <div key={idx}>{fmtDateLongEs(c.dateISO)} {c.start}–{c.end}</div>
+                                ))}
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                className="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50"
+                                onClick={() => setSelectedCells([])}
+                              >
+                                Limpiar selección
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          newSlot.date && newSlot.start && newSlot.end ? (
+                            <>Seleccionado: <b>{fmtDateLongEs(newSlot.date)}</b> {newSlot.start}–{newSlot.end}</>
+                          ) : (
+                            <span className="text-gray-500">Haz clic en uno o varios bloques de la semana para elegir disponibilidades.</span>
+                          )
+                        )}
                       </div>
                     </div>
                   )}
@@ -1429,6 +1581,7 @@ const logout = async () => {
                   )}
                 </Fade>
               )}
+              <p className="text-xs text-gray-500">Tip: puedes seleccionar varios bloques de la grilla semanal y agregarlos de una sola vez.</p>
               <button
                 className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 onClick={addSlot}
