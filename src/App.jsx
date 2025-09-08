@@ -7,7 +7,8 @@ import {
 
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 // Firebase Storage (para comprobantes de pago)
-import { getStorage, ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
+// (Pago por página deshabilitado)
+// import { getStorage, ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // ---------- utilidades ----------
 const uid = () => (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
@@ -45,6 +46,16 @@ const normYMD = (v) => {
   }
 };
 const formatTime = (t) => t.padStart(5, '0');
+
+const WEEKDAYS = [
+  { value: 0, label: 'Domingo' },
+  { value: 1, label: 'Lunes' },
+  { value: 2, label: 'Martes' },
+  { value: 3, label: 'Miércoles' },
+  { value: 4, label: 'Jueves' },
+  { value: 5, label: 'Viernes' },
+  { value: 6, label: 'Sábado' },
+];
 // Compara strings 'YYYY-MM-DD'
 const sameDay = (a, b) => !!a && !!b && a === b;
 const fmtCOP = (n) => n?.toLocaleString('es-CO');
@@ -73,7 +84,7 @@ console.log("API KEY:", import.meta.env.VITE_FB_API_KEY);
 console.log("FB ProjectID:", firebaseConfig.projectId);
 const appFB = initializeApp(firebaseConfig);
 const db = getFirestore(appFB);
-const storage = getStorage(appFB);
+// const storage = getStorage(appFB); // deshabilitado
 
 const auth = getAuth(appFB);
 
@@ -153,6 +164,25 @@ const combineDateAndTime = (dateISO, hm) => {
   const [y, m, d] = dateISO.split('-').map(Number);
   const [hh, mm] = hm.split(':').map(Number);
   return new Date(y, m - 1, d, hh, mm, 0, 0);
+};
+
+// Genera todas las fechas (YYYY-MM-DD) en [startISO, endISO] que caen en un weekday dado (0=Dom ... 6=Sáb)
+const datesByWeekdayInRange = (startISO, endISO, weekday) => {
+  const out = [];
+  if (!startISO || !endISO || typeof weekday !== 'number') return out;
+  const [sy, sm, sd] = startISO.split('-').map(Number);
+  const [ey, em, ed] = endISO.split('-').map(Number);
+  let d = new Date(sy, sm - 1, sd);
+  const end = new Date(ey, em - 1, ed);
+  d.setHours(0,0,0,0);
+  end.setHours(0,0,0,0);
+  let guard = 0; // límite de seguridad para evitar rangos enormes
+  while (d <= end && guard < 400) {
+    if (d.getDay() === weekday) out.push(toISODate(d));
+    d.setDate(d.getDate() + 1);
+    guard++;
+  }
+  return out;
 };
 const isSlotFutureWithLead = (s) => {
   const startDt = combineDateAndTime(s.dateISO, s.start);
@@ -320,7 +350,17 @@ const [loginPassword, setLoginPassword] = useState('');
   const [bookings, setBookings] = useState([]);
 
   // Tutor Portal forms
-  const [newSlot, setNewSlot] = useState({ tutorId: '', date: '', start: '', end: '', modalidad: 'presencial' });
+  const [newSlot, setNewSlot] = useState({
+    tutorId: '',
+    weekday: '',          // 0=Dom,1=Lun,...6=Sáb
+    start: '',
+    end: '',
+    modalidad: 'presencial',
+    recurMode: 'single',  // 'single' | 'range'
+    date: '',             // para fecha específica
+    rangeStart: '',       // para recurrente
+    rangeEnd: ''
+  });
   const [newTutorName, setNewTutorName] = useState('');
   const [newTutorPhoto, setNewTutorPhoto] = useState('');
   const [newTutorEmail, setNewTutorEmail] = useState('');
@@ -360,11 +400,8 @@ const [loginPassword, setLoginPassword] = useState('');
     student: '',
     subjects: '', // nuevas materias
     topics: '',   // temas específicos
-    notes: '',
-    paymentRef: ''
+    notes: ''
   });
-  // Archivo de comprobante (opcional)
-  const [paymentFile, setPaymentFile] = useState(null);
   // Estado de envío para evitar doble confirmación
   const [submitting, setSubmitting] = useState(false);
   // cargar / persistir
@@ -501,51 +538,79 @@ const logout = async () => {
   };
 
   const addSlot = async () => {
-    const { tutorId, date, start, end, modalidad } = newSlot;
+    const { tutorId, weekday, start, end, modalidad, recurMode, date, rangeStart, rangeEnd } = newSlot;
 
-    // Normaliza strings
     const _tutorId = (tutorId || '').trim();
-    const _date = (date || '').trim();
+    const _weekday = weekday === '' ? '' : Number(weekday);
     const _start = formatTime((start || '').trim());
     const _end = formatTime((end || '').trim());
     const _mod = (modalidad || '').trim();
 
-    // Validaciones específicas y mensajes claros
     if (!_tutorId) return alert('Selecciona un tutor.');
-    if (!_date) return alert('Selecciona una fecha.');
+    if (_weekday === '' || Number.isNaN(_weekday)) return alert('Selecciona un día de la semana.');
     if (!_start || !_end) return alert('Selecciona hora de inicio y fin.');
     if (!_mod) return alert('Selecciona la modalidad.');
 
-    // Validar formato HH:mm
     const hmRe = /^\d{2}:\d{2}$/;
-    if (!hmRe.test(_start) || !hmRe.test(_end)) {
-      return alert('Formato de hora inválido. Usa HH:mm.');
-    }
+    if (!hmRe.test(_start) || !hmRe.test(_end)) return alert('Formato de hora inválido. Usa HH:mm.');
 
     const startM = parseHM(_start);
     const endM = parseHM(_end);
     if (Number.isNaN(startM) || Number.isNaN(endM)) return alert('Hora inválida.');
     if (endM <= startM) return alert('La hora de fin debe ser posterior a la de inicio.');
 
-    const dateISO = toISODate(_date);
-
-    const WINDOW = 60; // minutos por bloque
-    const STEP = 30;   // desplazamiento
-
+    // Ventanas deslizantes: bloques de 60 min cada 30 min
+    const WINDOW = 60;
+    const STEP = 30;
     if (endM - startM < WINDOW) return alert('El bloque debe ser de al menos 60 minutos.');
 
+    // Construir lista de fechas a partir del modo
+    let dates = [];
+    if (recurMode === 'single') {
+      if (!date) return alert('Selecciona la fecha específica.');
+      const iso = toISODate(date);
+      const wd = new Date(iso).getDay();
+      if (wd !== _weekday) {
+        const wlabel = WEEKDAYS.find(w => w.value === _weekday)?.label || 'día seleccionado';
+        const cont = confirm(`La fecha elegida no cae en ${wlabel}. ¿Deseas continuar igualmente?`);
+        if (!cont) return;
+      }
+      dates = [iso];
+    } else {
+      // Recurrente entre rango de fechas
+      if (!rangeStart || !rangeEnd) return alert('Selecciona fecha "Desde" y "Hasta".');
+      const isoStart = toISODate(rangeStart);
+      const isoEnd = toISODate(rangeEnd);
+      if (new Date(isoEnd) < new Date(isoStart)) return alert('El rango de fechas es inválido.');
+
+      dates = datesByWeekdayInRange(isoStart, isoEnd, _weekday);
+      if (dates.length === 0) return alert('No hay días coincidentes en el rango.');
+      if (dates.length > 200) return alert('El rango genera demasiadas fechas. Reduce el periodo.');
+    }
+
     try {
-      // generar ventanas deslizantes de 1h cada 30min, todas dentro del bloque
       const ops = [];
-      for (let t = startM; t + WINDOW <= endM; t += STEP) {
-        const sHM = toHM(t);
-        const eHM = toHM(t + WINDOW);
-        const slot = { tutorId: _tutorId, dateISO, start: sHM, end: eHM, booked: false, blockedBy: null, modalidad: _mod };
-        ops.push(addDoc(collection(db, 'slots'), slot));
+      for (const dateISO of dates) {
+        for (let t = startM; t + WINDOW <= endM; t += STEP) {
+          const sHM = toHM(t);
+          const eHM = toHM(t + WINDOW);
+          const slot = { tutorId: _tutorId, dateISO, start: sHM, end: eHM, booked: false, blockedBy: null, modalidad: _mod };
+          ops.push(addDoc(collection(db, 'slots'), slot));
+        }
       }
       await Promise.all(ops);
-      setNewSlot({ tutorId: '', date: '', start: '', end: '', modalidad: 'presencial' });
-      alert('Disponibilidad agregada como bloques de 1 hora cada 30 minutos.');
+      setNewSlot({
+        tutorId: '',
+        weekday: '',
+        start: '',
+        end: '',
+        modalidad: 'presencial',
+        recurMode: 'single',
+        date: '',
+        rangeStart: '',
+        rangeEnd: ''
+      });
+      alert(`Disponibilidad agregada: ${dates.length} día(s) con bloques de 1 hora cada 30 minutos.`);
     } catch (e) {
       alert('Error al agregar disponibilidad: ' + e.message);
     }
@@ -604,7 +669,7 @@ const logout = async () => {
 
   // confirmar reserva
   const confirmBooking = async () => {
-    const { parentName, email, student, notes, paymentRef } = bookingForm;
+    const { parentName, email, student, notes } = bookingForm;
     if (!parentName.trim() || !email.trim() || !student.trim()) return alert('Por favor completa nombre del padre/madre, correo y nombre del estudiante.');
     // Validación simple de email
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
@@ -661,18 +726,6 @@ const logout = async () => {
       // crear booking id primero
       const bookingRef = doc(collection(db, 'bookings'));
 
-        // Subir comprobante si se adjunta archivo (Storage)
-        let paymentProofUrl = '';
-        if (paymentFile) {
-          paymentProofUrl = await (async () => {
-            const safeName = (paymentFile.name || 'comprobante').replace(/[^\w.\-]/g, '_');
-            const path = `paymentProofs/${bookingRef.id}/${safeName}`;
-            const fileRef = sRef(storage, path);
-            await uploadBytes(fileRef, paymentFile);
-            return await getDownloadURL(fileRef);
-          })();
-        }
-
       // marcar seleccionados como reservados
       selectedSlots.forEach(id => {
         batch.update(doc(db, 'slots', id), { booked: true, blockedBy: bookingRef.id });
@@ -700,8 +753,7 @@ const logout = async () => {
         student: student.trim(),
         notes: (notes || '').trim(),
         paymentStatus: 'pendiente',
-        paymentRef: (paymentRef || '').trim(),
-        paymentProofUrl,
+        paymentRef: '',
         subjects: (bookingForm.subjects || '').trim(),
         topics: (bookingForm.topics || '').trim(),  
         createdAtISO: new Date().toISOString(),
@@ -748,8 +800,7 @@ const logout = async () => {
       
       setSelectedSlots([]);
       setSingleSelectedSlot(null);
-      setBookingForm({ parentName: '', email: '', student: '', subjects: '', topics: '', notes: '', paymentRef: '' });
-      setPaymentFile(null);
+      setBookingForm({ parentName: '', email: '', student: '', subjects: '', topics: '', notes: '' });
       setConfirmStep(3); // mostrar pantalla de éxito en el modal
       setSubmitting(false);
     } catch (e) {
@@ -897,7 +948,6 @@ const logout = async () => {
                   <li><b>Presencial:</b> ${fmtCOP(WEEKEND_RATES.presencial)} COP por hora</li>
                   <li><b>Virtual:</b> ${fmtCOP(WEEKEND_RATES.virtual)} COP por hora</li>
                 </ul>
-                <p className="text-xs text-gray-500 mt-2">La tarifa se calcula automáticamente según la fecha de cada clase.</p>
               </div>
 
               {/* Botones inferiores */}
@@ -1110,17 +1160,46 @@ const logout = async () => {
             {/* Agregar disponibilidad */}
             <div className="rounded-2xl border bg-white p-4 space-y-3">
               <h3 className="font-medium">Agregar disponibilidad</h3>
-              <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
+                {/* Tutor */}
                 <select className="border rounded-lg px-3 py-2 bg-white" value={newSlot.tutorId} onChange={e => setNewSlot(s => ({ ...s, tutorId: e.target.value }))}>
                   <option value="">Seleccionar tutor</option>
                   {tutors.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
-                <input type="date" className="border rounded-lg px-3 py-2 bg-white" value={newSlot.date} onChange={e => setNewSlot(s => ({ ...s, date: e.target.value }))} />
+
+                {/* Día de la semana */}
+                <select className="border rounded-lg px-3 py-2 bg-white" value={newSlot.weekday} onChange={e => setNewSlot(s => ({ ...s, weekday: e.target.value }))}>
+                  <option value="">Día de la semana</option>
+                  {WEEKDAYS.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
+                </select>
+
+                {/* Hora inicio / fin */}
                 <input type="time" className="border rounded-lg px-3 py-2 bg-white" value={newSlot.start} onChange={e => setNewSlot(s => ({ ...s, start: e.target.value }))} />
                 <input type="time" className="border rounded-lg px-3 py-2 bg-white" value={newSlot.end} onChange={e => setNewSlot(s => ({ ...s, end: e.target.value }))} />
+
+                {/* Modalidad */}
                 <select className="border rounded-lg px-3 py-2 bg-white" value={newSlot.modalidad} onChange={e => setNewSlot(s => ({ ...s, modalidad: e.target.value }))}>
                   {MODALIDADES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
+
+                {/* Modo: específica o recurrente */}
+                <select className="border rounded-lg px-3 py-2 bg-white" value={newSlot.recurMode} onChange={e => setNewSlot(s => ({ ...s, recurMode: e.target.value }))}>
+                  <option value="single">Fecha específica</option>
+                  <option value="range">Recurrente (entre dos fechas)</option>
+                </select>
+
+                {/* Si es fecha específica */}
+                {newSlot.recurMode === 'single' && (
+                  <input type="date" className="border rounded-lg px-3 py-2 bg-white sm:col-span-2" value={newSlot.date} onChange={e => setNewSlot(s => ({ ...s, date: e.target.value }))} />
+                )}
+
+                {/* Si es recurrente: rango */}
+                {newSlot.recurMode === 'range' && (
+                  <>
+                    <input type="date" className="border rounded-lg px-3 py-2 bg-white" placeholder="Desde" value={newSlot.rangeStart} onChange={e => setNewSlot(s => ({ ...s, rangeStart: e.target.value }))} />
+                    <input type="date" className="border rounded-lg px-3 py-2 bg-white" placeholder="Hasta" value={newSlot.rangeEnd} onChange={e => setNewSlot(s => ({ ...s, rangeEnd: e.target.value }))} />
+                  </>
+                )}
               </div>
               <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={addSlot}>Agregar disponibilidad</button>
 
@@ -1217,12 +1296,13 @@ const logout = async () => {
                   onChange={e => setEditTutorEmail(e.target.value)}
                   disabled={!editTutorId}
                 />
-                <input
-                  className="border rounded-lg px-3 py-2"
+                <textarea
+                  className="border rounded-lg px-3 py-2 sm:col-span-5 min-h-[120px]"
                   placeholder="Descripción"
                   value={editTutorBio}
                   onChange={e => setEditTutorBio(e.target.value)}
                   disabled={!editTutorId}
+                  rows={5}
                 />
               </div>
               <div className="flex justify-end">
@@ -1281,60 +1361,53 @@ const logout = async () => {
                         <td className="px-4 py-2 text-sm">{b.parentName}</td>
                         <td className="px-4 py-2 text-sm">{b.email}</td>
                         <td className="px-4 py-2 text-sm">
-                      {b.paymentStatus === 'confirmado' ? (
-                        <span className="text-green-700 font-medium">Confirmado</span>
-                      ) : (
-                        <span className="text-orange-700">Pendiente</span>
-                      )}
-                      {b.paymentProofUrl ? (
-                        <div>
-                          <a href={b.paymentProofUrl} target="_blank" rel="noopener" className="text-indigo-600 hover:underline">Ver comprobante</a>
-                        </div>
-                      ) : (
-                        <div className="text-gray-500">Sin comprobante</div>
-                      )}
-                      {b.paymentStatus !== 'confirmado' && (
-                        <button
-                          className="mt-1 text-sm text-green-700 hover:underline"
-                          onClick={async () => {
-                            try {
-                              await updateDoc(doc(db, 'bookings', b.id), { paymentStatus: 'confirmado' });
-                              // Enviar correo de pago confirmado
-                              const parentEmail = b.email;
-                              const tut = tutorMap[b.tutorId];
-                              const slotList = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
-                              const whenText = slotList.map(s => `${fmtDateLongEs(s.dateISO)} ${s.start}–${s.end}`).join(', ');
-                              const tipo = b.mode === 'individual' ? 'Clase individual' : `Paquete ${b.hours} horas`;
-                              const modalidad = b.modalidad;
-                              const amount = computeTotalFromSlots(slotList, modalidad);
-                              const total = amount ? `$${fmtCOP(amount)} COP` : '—';
-                              const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || '';
+                          {b.paymentStatus === 'confirmado' ? (
+                            <span className="text-green-700 font-medium">Confirmado</span>
+                          ) : (
+                            <span className="text-orange-700">Pendiente</span>
+                          )}
+                          {b.paymentStatus !== 'confirmado' && (
+                            <button
+                              className="mt-1 ml-2 text-sm text-green-700 hover:underline"
+                              onClick={async () => {
+                                try {
+                                  await updateDoc(doc(db, 'bookings', b.id), { paymentStatus: 'confirmado' });
+                                  // Enviar correo de pago confirmado
+                                  const parentEmail = b.email;
+                                  const tTutor = tutorMap[b.tutorId];
+                                  const slotList2 = b.slotIds.map(id => slots.find(s => s.id === id)).filter(Boolean);
+                                  const whenText2 = slotList2.map(s => `${fmtDateLongEs(s.dateISO)} ${s.start}–${s.end}`).join(', ');
+                                  const tipo2 = b.mode === 'individual' ? 'Clase individual' : `Paquete ${b.hours} horas`;
+                                  const modalidad2 = b.modalidad;
+                                  const amount2 = computeTotalFromSlots(slotList2, modalidad2);
+                                  const total2 = amount2 ? `$${fmtCOP(amount2)} COP` : '—';
+                                  const adminEmail2 = import.meta.env.VITE_ADMIN_EMAIL || '';
 
-                              await sendEmailJS(EMAILJS_TPL_PAID, {
-                                to_email: parentEmail,
-                                cc: [tut?.email, adminEmail].filter(Boolean).join(','),
-                                parentName: b.parentName,
-                                student: b.student,
-                                tutorName: tut?.name || 'Tutor',
-                                modalidad,
-                                tipo,
-                                hours: b.hours,
-                                whenText,
-                                total,
-                                bookingId: b.id,
-                                manageUrl: '#'
-                              });
+                                  await sendEmailJS(EMAILJS_TPL_PAID, {
+                                    to_email: parentEmail,
+                                    cc: [tTutor?.email, adminEmail2].filter(Boolean).join(','),
+                                    parentName: b.parentName,
+                                    student: b.student,
+                                    tutorName: tTutor?.name || 'Tutor',
+                                    modalidad: modalidad2,
+                                    tipo: tipo2,
+                                    hours: b.hours,
+                                    whenText: whenText2,
+                                    total: total2,
+                                    bookingId: b.id,
+                                    manageUrl: '#'
+                                  });
 
-                              alert('Pago confirmado y correo enviado.');
-                            } catch (e) {
-                              alert('Error al confirmar pago: ' + (e?.message || e));
-                            }
-                          }}
-                        >
-                          Confirmar pago
-                        </button>
-                      )}
-                    </td>
+                                  alert('Pago confirmado y correo enviado.');
+                                } catch (e) {
+                                  alert('Error al confirmar pago: ' + (e?.message || e));
+                                }
+                              }}
+                            >
+                              Confirmar pago
+                            </button>
+                          )}
+                        </td>
                         <td className="px-4 py-2">
                           <button className="text-red-700 hover:underline text-sm transition duration-300" onClick={() => cancelBooking(b.id)}>cancelar</button>
                         </td>
@@ -1483,28 +1556,12 @@ const logout = async () => {
       </div>
     </div>
 
-    {/* Pago */}
+    {/* Pago (informativo) */}
     <div className="mt-3 rounded-lg border p-3 bg-white">
       <div className="font-medium mb-2">Pago</div>
-      <p className="text-sm text-gray-600">Escanea el QR de Bancolombia para pagar. Luego ingresa el número de referencia o adjunta el comprobante. Verificaremos manualmente.</p>
-      <div className="mt-3 flex items-center gap-3">
-        <img src="/qr-bancolombia.png" alt="QR Bancolombia" className="w-40 h-40 object-contain border rounded-md bg-white" />
-        <div className="flex-1">
-          <input
-            className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-            placeholder="Referencia de pago (opcional)"
-            value={bookingForm.paymentRef}
-            onChange={e => setBookingForm(f => ({ ...f, paymentRef: e.target.value }))}
-          />
-          <input
-            type="file"
-            accept="image/*,application/pdf"
-            className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400 mt-2"
-            onChange={(e) => setPaymentFile(e.target.files?.[0] || null)}
-          />
-          <p className="text-xs text-gray-500 mt-1">Puedes adjuntar una imagen o PDF del comprobante (máx. 5 MB).</p>
-        </div>
-      </div>
+      <p className="text-sm text-gray-600">
+        Tu reserva quedará registrada como <b>pendiente de pago</b>. Te contactaremos para coordinar el método de pago (transferencia, QR Bancolombia u otras opciones).
+      </p>
     </div>
 
     <div className="flex justify-between gap-2 mt-3">
