@@ -419,6 +419,39 @@ const [loginPassword, setLoginPassword] = useState('');
     return { ok, reason };
   }, [newSlot, canChooseDateTime]);
 
+  // ----- Mini calendario semanal (para seleccionar fecha en "Fecha específica") -----
+  const [weekAnchor, setWeekAnchor] = useState(() => {
+    const d = new Date();
+    d.setHours(0,0,0,0);
+    return d;
+  });
+
+  const getMonday = (d) => {
+    // Copia y mueve al lunes de esa semana (lunes=1, domingo=0)
+    const c = new Date(d);
+    const day = c.getDay(); // 0=domingo..6=sábado
+    const diff = (day === 0 ? -6 : 1 - day); // si es domingo, retrocede 6
+    c.setDate(c.getDate() + diff);
+    c.setHours(0,0,0,0);
+    return c;
+  };
+
+  const formatYMD = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth()+1).padStart(2,'0');
+    const da = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${da}`;
+  };
+
+  const weekDays = (anchor) => {
+    const mon = getMonday(anchor);
+    return Array.from({ length: 7 }, (_, i) => {
+      const x = new Date(mon);
+      x.setDate(mon.getDate() + i);
+      return x;
+    });
+  };
+
   // Admin: editar tutor
   const [editTutorId, setEditTutorId] = useState('');
   const [editTutorName, setEditTutorName] = useState('');
@@ -1288,12 +1321,72 @@ const logout = async () => {
                   )}
                   {/* Si es fecha específica */}
                   {newSlot.recurMode === 'single' && (
-                    <input
-                      type="date"
-                      className="border rounded-lg px-3 py-2 bg-white sm:col-span-2 transition duration-200 focus:ring-2 focus:ring-indigo-400"
-                      value={newSlot.date}
-                      onChange={e => setNewSlot(s => ({ ...s, date: e.target.value }))}
-                    />
+                    <div className="sm:col-span-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded border bg-white hover:bg-gray-50"
+                          onClick={() => {
+                            setWeekAnchor(prev => {
+                              const p = new Date(prev);
+                              p.setDate(p.getDate() - 7);
+                              return p;
+                            });
+                          }}
+                        >
+                          ← Semana anterior
+                        </button>
+                        <div className="text-sm text-gray-700 font-medium">
+                          Semana del {fmtDateLongEs(formatYMD(getMonday(weekAnchor)))}
+                        </div>
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded border bg-white hover:bg-gray-50"
+                          onClick={() => {
+                            setWeekAnchor(prev => {
+                              const n = new Date(prev);
+                              n.setDate(n.getDate() + 7);
+                              return n;
+                            });
+                          }}
+                        >
+                          Siguiente semana →
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-7 gap-2">
+                        {weekDays(weekAnchor).map(d => {
+                          const ymd = formatYMD(d);
+                          const selected = newSlot.date === ymd;
+                          const isPast = new Date(ymd) < new Date(toISODate(new Date()));
+                          return (
+                            <button
+                              key={ymd}
+                              type="button"
+                              onClick={() => !isPast && setNewSlot(s => ({ ...s, date: ymd }))}
+                              className={
+                                'p-2 rounded-lg border bg-white text-center transition duration-200 ' +
+                                (selected ? 'ring-2 ring-indigo-400 font-medium' : 'hover:shadow') + ' ' +
+                                (isPast ? 'opacity-40 cursor-not-allowed' : '')
+                              }
+                              title={fmtDateLongEs(ymd)}
+                            >
+                              <div className="text-xs text-gray-500">{WEEKDAYS[d.getDay()].label.slice(0,3)}</div>
+                              <div className="text-lg leading-none">{d.getDate()}</div>
+                              <div className="text-[11px] text-gray-500">{String(d.getMonth()+1).padStart(2,'0')}/{String(d.getFullYear()).slice(2)}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Valor seleccionado */}
+                      <div className="mt-2 text-sm text-gray-700">
+                        {newSlot.date
+                          ? <>Fecha seleccionada: <b>{fmtDateLongEs(newSlot.date)}</b></>
+                          : <span className="text-gray-500">Elige un día de la semana</span>
+                        }
+                      </div>
+                    </div>
                   )}
                   {/* Si es recurrente: rango */}
                   {newSlot.recurMode === 'range' && (
