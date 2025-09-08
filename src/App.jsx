@@ -366,6 +366,56 @@ const [loginPassword, setLoginPassword] = useState('');
   const [newTutorEmail, setNewTutorEmail] = useState('');
   const [newTutorBio, setNewTutorBio] = useState('');
 
+  // Paso a paso para agregar disponibilidad
+  const canChooseModalidad = !!newSlot.tutorId;
+  const canChooseDateTime = canChooseModalidad && !!newSlot.modalidad;
+
+  // Memoized guard para habilitar/deshabilitar el botón "Agregar disponibilidad"
+  const addSlotGuard = React.useMemo(() => {
+    let ok = canChooseDateTime;
+    let reason = '';
+
+    if (!ok) {
+      reason = 'Primero elige tutor y modalidad';
+    } else {
+      // Validar horas
+      if (!newSlot.start || !newSlot.end) {
+        ok = false;
+        reason = 'Selecciona hora de inicio y fin';
+      }
+      // Validar según modo
+      if (ok && newSlot.recurMode === 'single') {
+        if (!newSlot.date) {
+          ok = false;
+          reason = 'Selecciona la fecha específica';
+        }
+      }
+      if (ok && newSlot.recurMode === 'range') {
+        // weekday requerido en recurrente
+        const wkEmpty = newSlot.weekday === '' || newSlot.weekday === null || typeof newSlot.weekday === 'undefined';
+        if (wkEmpty) {
+          ok = false;
+          reason = 'Selecciona el día de la semana';
+        }
+        // rango requerido y válido
+        if (ok && (!newSlot.rangeStart || !newSlot.rangeEnd)) {
+          ok = false;
+          reason = 'Selecciona el rango de fechas (Desde/Hasta)';
+        }
+        if (ok) {
+          const s = new Date(newSlot.rangeStart);
+          const e = new Date(newSlot.rangeEnd);
+          if (e < s) {
+            ok = false;
+            reason = 'El rango de fechas es inválido';
+          }
+        }
+      }
+    }
+
+    return { ok, reason };
+  }, [newSlot, canChooseDateTime]);
+
   // Admin: editar tutor
   const [editTutorId, setEditTutorId] = useState('');
   const [editTutorName, setEditTutorName] = useState('');
@@ -546,8 +596,9 @@ const logout = async () => {
     const _end = formatTime((end || '').trim());
     const _mod = (modalidad || '').trim();
 
+    // Validación: tutor, día de la semana (solo obligatorio en modo recurrente), hora, modalidad
     if (!_tutorId) return alert('Selecciona un tutor.');
-    if (_weekday === '' || Number.isNaN(_weekday)) return alert('Selecciona un día de la semana.');
+    if (recurMode === 'range' && (_weekday === '' || Number.isNaN(_weekday))) return alert('Selecciona un día de la semana.');
     if (!_start || !_end) return alert('Selecciona hora de inicio y fin.');
     if (!_mod) return alert('Selecciona la modalidad.');
 
@@ -569,12 +620,7 @@ const logout = async () => {
     if (recurMode === 'single') {
       if (!date) return alert('Selecciona la fecha específica.');
       const iso = toISODate(date);
-      const wd = new Date(iso).getDay();
-      if (wd !== _weekday) {
-        const wlabel = WEEKDAYS.find(w => w.value === _weekday)?.label || 'día seleccionado';
-        const cont = confirm(`La fecha elegida no cae en ${wlabel}. ¿Deseas continuar igualmente?`);
-        if (!cont) return;
-      }
+      // No exigimos weekday en modo "fecha específica"; se infiere del propio iso si se requiere mostrar en UI.
       dates = [iso];
     } else {
       // Recurrente entre rango de fechas
@@ -1141,67 +1187,131 @@ const logout = async () => {
             <section className="space-y-8">
             <h2 className="text-xl font-semibold">Portal de tutores</h2>
 
-            {/* Agregar tutor */}
-            <div className="rounded-2xl border bg-white p-4 space-y-2">
-              <h3 className="font-medium">Agregar tutor</h3>
-              <div className="grid sm:grid-cols-4 gap-2">
-                <input className="border rounded-lg px-3 py-2" placeholder="Nombre del tutor" value={newTutorName} onChange={e => setNewTutorName(e.target.value)} />
-                <input className="border rounded-lg px-3 py-2" placeholder="Foto (URL o /tutores/ana.jpg)" value={newTutorPhoto} onChange={e => setNewTutorPhoto(e.target.value)} />
-                <input className="border rounded-lg px-3 py-2" placeholder="Correo del tutor" value={newTutorEmail} onChange={e => setNewTutorEmail(e.target.value)} />
-                <input className="border rounded-lg px-3 py-2" placeholder="Breve descripción" value={newTutorBio} onChange={e => setNewTutorBio(e.target.value)} />
-              </div>
-              <div className="flex justify-end">
-                <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={addTutor}>
-                  Agregar
-                </button>
-              </div>
-            </div>
 
             {/* Agregar disponibilidad */}
             <div className="rounded-2xl border bg-white p-4 space-y-3">
               <h3 className="font-medium">Agregar disponibilidad</h3>
-              <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
-                {/* Tutor */}
-                <select className="border rounded-lg px-3 py-2 bg-white" value={newSlot.tutorId} onChange={e => setNewSlot(s => ({ ...s, tutorId: e.target.value }))}>
+              {/* Paso 1: Tutor */}
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <select
+                  className="border rounded-lg px-3 py-2 bg-white"
+                  value={newSlot.tutorId}
+                  onChange={e => setNewSlot(s => ({ ...s, tutorId: e.target.value }))}
+                >
                   <option value="">Seleccionar tutor</option>
                   {tutors.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
-
-                {/* Día de la semana */}
-                <select className="border rounded-lg px-3 py-2 bg-white" value={newSlot.weekday} onChange={e => setNewSlot(s => ({ ...s, weekday: e.target.value }))}>
-                  <option value="">Día de la semana</option>
-                  {WEEKDAYS.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
-                </select>
-
-                {/* Hora inicio / fin */}
-                <input type="time" className="border rounded-lg px-3 py-2 bg-white" value={newSlot.start} onChange={e => setNewSlot(s => ({ ...s, start: e.target.value }))} />
-                <input type="time" className="border rounded-lg px-3 py-2 bg-white" value={newSlot.end} onChange={e => setNewSlot(s => ({ ...s, end: e.target.value }))} />
-
-                {/* Modalidad */}
-                <select className="border rounded-lg px-3 py-2 bg-white" value={newSlot.modalidad} onChange={e => setNewSlot(s => ({ ...s, modalidad: e.target.value }))}>
-                  {MODALIDADES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-                </select>
-
-                {/* Modo: específica o recurrente */}
-                <select className="border rounded-lg px-3 py-2 bg-white" value={newSlot.recurMode} onChange={e => setNewSlot(s => ({ ...s, recurMode: e.target.value }))}>
-                  <option value="single">Fecha específica</option>
-                  <option value="range">Recurrente (entre dos fechas)</option>
-                </select>
-
-                {/* Si es fecha específica */}
-                {newSlot.recurMode === 'single' && (
-                  <input type="date" className="border rounded-lg px-3 py-2 bg-white sm:col-span-2" value={newSlot.date} onChange={e => setNewSlot(s => ({ ...s, date: e.target.value }))} />
-                )}
-
-                {/* Si es recurrente: rango */}
-                {newSlot.recurMode === 'range' && (
-                  <>
-                    <input type="date" className="border rounded-lg px-3 py-2 bg-white" placeholder="Desde" value={newSlot.rangeStart} onChange={e => setNewSlot(s => ({ ...s, rangeStart: e.target.value }))} />
-                    <input type="date" className="border rounded-lg px-3 py-2 bg-white" placeholder="Hasta" value={newSlot.rangeEnd} onChange={e => setNewSlot(s => ({ ...s, rangeEnd: e.target.value }))} />
-                  </>
-                )}
               </div>
-              <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={addSlot}>Agregar disponibilidad</button>
+
+              {/* Paso 2: Modalidad (se muestra cuando hay tutor) */}
+              {canChooseModalidad && (
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <select
+                    className="border rounded-lg px-3 py-2 bg-white"
+                    value={newSlot.modalidad}
+                    onChange={e => setNewSlot(s => ({ ...s, modalidad: e.target.value }))}
+                  >
+                    {MODALIDADES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {/* Paso 3: Fecha y hora + repetición (se muestra cuando hay modalidad) */}
+              {canChooseDateTime && (
+                <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
+                  {/* Hora inicio */}
+                  <input
+                    type="time"
+                    className="border rounded-lg px-3 py-2 bg-white"
+                    value={newSlot.start}
+                    onChange={e => setNewSlot(s => ({ ...s, start: e.target.value }))}
+                  />
+                  {/* Hora fin */}
+                  <input
+                    type="time"
+                    className="border rounded-lg px-3 py-2 bg-white"
+                    value={newSlot.end}
+                    onChange={e => setNewSlot(s => ({ ...s, end: e.target.value }))}
+                  />
+                  {/* Modo: específica o recurrente */}
+                  <select
+                    className="border rounded-lg px-3 py-2 bg-white"
+                    value={newSlot.recurMode}
+                    onChange={e => setNewSlot(s => ({ ...s, recurMode: e.target.value }))}
+                  >
+                    <option value="single">Fecha específica</option>
+                    <option value="range">Recurrente (entre dos fechas)</option>
+                  </select>
+                  {/* Día de la semana — SOLO si es recurrente */}
+                  {newSlot.recurMode === 'range' && (
+                    <select
+                      className="border rounded-lg px-3 py-2 bg-white"
+                      value={newSlot.weekday}
+                      onChange={e => setNewSlot(s => ({ ...s, weekday: e.target.value }))}
+                    >
+                      <option value="">Día de la semana</option>
+                      {WEEKDAYS.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
+                    </select>
+                  )}
+                  {/* Si es fecha específica */}
+                  {newSlot.recurMode === 'single' && (
+                    <input
+                      type="date"
+                      className="border rounded-lg px-3 py-2 bg-white sm:col-span-2"
+                      value={newSlot.date}
+                      onChange={e => setNewSlot(s => ({ ...s, date: e.target.value }))}
+                    />
+                  )}
+                  {/* Si es recurrente: rango */}
+                  {newSlot.recurMode === 'range' && (
+                    <>
+                      <input
+                        type="date"
+                        className="border rounded-lg px-3 py-2 bg-white"
+                        placeholder="Desde"
+                        value={newSlot.rangeStart}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setNewSlot(s => {
+                            // Si no hay weekday aún, tomarlo del día de la semana de rangeStart
+                            let wk = s.weekday;
+                            if (!wk && v) {
+                              const d = new Date(v);
+                              if (!isNaN(d)) wk = String(d.getDay()); // 0=Dom..6=Sáb
+                            }
+                            return { ...s, rangeStart: v, weekday: wk };
+                          });
+                        }}
+                      />
+                      <input
+                        type="date"
+                        className="border rounded-lg px-3 py-2 bg-white"
+                        placeholder="Hasta"
+                        value={newSlot.rangeEnd}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setNewSlot(s => {
+                            let wk = s.weekday;
+                            if (!wk && v) {
+                              const d = new Date(v);
+                              if (!isNaN(d)) wk = String(d.getDay()); // 0=Dom..6=Sáb
+                            }
+                            return { ...s, rangeEnd: v, weekday: wk };
+                          });
+                        }}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+              <button
+                className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99] disabled:opacity-50"
+                onClick={addSlot}
+                disabled={!addSlotGuard.ok}
+                title={addSlotGuard.ok ? 'Agregar disponibilidad' : addSlotGuard.reason || 'Completa los campos'}
+              >
+                Agregar disponibilidad
+              </button>
 
               <div className="pt-4 space-y-2">
                 <h4 className="font-medium">Todos los horarios</h4>
@@ -1263,6 +1373,20 @@ const logout = async () => {
               >
                 Resetear datos (borrar todo)
               </button>
+            </div>
+            <div className="rounded-2xl border bg-white p-4 space-y-2">
+              <h3 className="font-medium">Agregar tutor</h3>
+              <div className="grid sm:grid-cols-4 gap-2">
+                <input className="border rounded-lg px-3 py-2" placeholder="Nombre del tutor" value={newTutorName} onChange={e => setNewTutorName(e.target.value)} />
+                <input className="border rounded-lg px-3 py-2" placeholder="Foto (URL o /tutores/ana.jpg)" value={newTutorPhoto} onChange={e => setNewTutorPhoto(e.target.value)} />
+                <input className="border rounded-lg px-3 py-2" placeholder="Correo del tutor" value={newTutorEmail} onChange={e => setNewTutorEmail(e.target.value)} />
+                <input className="border rounded-lg px-3 py-2 sm:col-span-4" placeholder="Breve descripción" value={newTutorBio} onChange={e => setNewTutorBio(e.target.value)} />
+              </div>
+              <div className="flex justify-end">
+                <button className="px-3 py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]" onClick={addTutor}>
+                  Agregar
+                </button>
+              </div>
             </div>
             <div className="rounded-2xl border bg-white p-4 space-y-3">
               <h3 className="font-medium">Editar tutor</h3>
