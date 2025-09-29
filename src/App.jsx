@@ -959,11 +959,11 @@ const logout = async () => {
 
               <div>
                 <h2 className="text-4xl sm:text-6xl font-semibold tracking-tight leading-tight">
-                  Lumina
+                  Lumina Lessons
                   <div className="text-2xl sm:text-3xl font-medium mt-1">Tutorías personalizadas</div>
                 </h2>
                 <p className="mt-4 text-gray-600 text-lg italic">
-                  Te llevamos a la excelencia académica con una sonrisa
+                  Donde el talento encuentra guía
                 </p>
               </div>
 
@@ -1035,7 +1035,7 @@ const logout = async () => {
               {/* Botones inferiores */}
               <div className="grid sm:grid-cols-3 gap-4">
                 {/* Reemplaza href con tu enlace real (WhatsApp, formulario, etc.) */}
-                <a href="#" target="_blank" rel="noopener" className="text-left rounded-2xl border bg-white p-6 transition hover:shadow-lg hover:scale-[1.01] duration-300">
+                <a href="https://wa.link/6en1yg" target="_blank" rel="noopener" className="text-left rounded-2xl border bg-white p-6 transition hover:shadow-lg hover:scale-[1.01] duration-300">
                   <h3 className="text-lg font-semibold">¿Necesitas otras opciones?</h3>
                   <p className="text-sm text-gray-600 mt-1">Contáctanos para más opciones</p>
                 </a>
@@ -1125,7 +1125,15 @@ const logout = async () => {
                     {availableSlots.map(s => (
                       <li key={s.id} className="border rounded-2xl bg-white p-5 shadow-sm transition hover:shadow-lg hover:scale-[1.01] duration-300 space-y-2">
                         <div className="text-sm text-gray-500">{fmtDateLongEs(s.dateISO)}</div>
-                        <div className="text-lg font-medium">{tutorMap[s.tutorId]?.name || 'Tutor'}</div>
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={tutorMap[s.tutorId]?.photo || '/tutores/default.jpg'}
+                            alt={tutorMap[s.tutorId]?.name || 'Tutor'}
+                            className="w-10 h-10 rounded-full object-cover border"
+                            loading="lazy"
+                          />
+                          <div className="text-lg font-medium">{tutorMap[s.tutorId]?.name || 'Tutor'}</div>
+                        </div>
                         <div className="text-gray-700">{s.start} – {s.end}</div>
                         <div className="text-xs text-gray-600">Modalidad: {s.modalidad}</div>
                         <button onClick={() => openConfirmSingle(s)} className="mt-2 w-full py-2 rounded-lg bg-indigo-600 text-white transition duration-300 hover:opacity-95 active:scale-[0.99]">
